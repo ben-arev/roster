@@ -1,0 +1,2623 @@
+<!DOCTYPE html>
+<!--
+  ROSTER — personal career-mode planner
+  Plan v2: 1 Nov 2026 → 18 Apr 2027 · release 31 Mar · psychometric 18 Apr
+  Days before 1 Nov render as they did: plan v1 (9 Aug → 17 Oct), then an
+  empty pre-season until 1 Nov.
+
+  This build is an installable app (PWA): index.html + manifest.webmanifest +
+  sw.js + icons. Host the folder anywhere with https (GitHub Pages), open it
+  once on the phone, Add to Home Screen — after that it opens like any app,
+  works offline, and saves everything you do.
+
+  HOW THIS FILE IS PUT TOGETHER
+  ─────────────────────────────────────────────────────────────────────────
+  1. STYLE      design tokens first, then components in the order you meet
+               them on screen: nav, shell, home, panels, rows, overlays.
+  2. MARKUP     nine tab sections, one per tab, all present in the DOM at
+               once and shown or hidden by setTab().
+  3. LOGIC      four layers, in this order:
+
+       LAYER 1 — THE PLAN (constants, never written to at runtime)
+         Templates, milestones, ratings, messages, explanations. This is the
+         only part to edit if the plan itself changes. Plan v1 templates are
+         kept under LEGACY so days before 1 Nov keep their meaning: ticks are
+         stored by block position, so changing an old day's template would
+         silently relabel what you already cleared.
+
+       LAYER 2 — YOUR STATE (one object, S, saved in three places)
+         Everything you do: ticks, moved times, added blocks, cleared marks,
+         signed goals, dumps, the API key. Never contains plan text — only
+         references to it by id. v2 milestones use "n" ids and v2 messages
+         "mv" ids, so nothing cleared under v1 carries over by accident.
+
+       LAYER 3 — THE JOIN
+         blocks(date) merges 1 and 2 into the day you actually see. Every
+         screen reads through it.
+
+       LAYER 4 — SCREENS
+         One render function per tab, plus the interactions that belong to
+         it. render() calls them all; each one is safe to call at any time.
+
+  WHERE YOUR DATA LIVES
+  ─────────────────────────────────────────────────────────────────────────
+  Every change is written immediately, to two places in this app's own
+  storage on the phone:
+    1. localStorage key "roster.fc.v1" (unchanged, so v1 data carries over)
+    2. IndexedDB "roster-db" — a mirror, plus one snapshot per day for the
+       last 7 days, so a bad edit can be rolled back (Customise → Saved copies)
+  On start-up the newer of the two wins, so if the browser drops one, the
+  other restores it. The app also asks the browser to mark its storage as
+  persistent, so it is not cleared when the phone is short on space.
+  Customise → Export writes a file you can keep anywhere; the API key is
+  deliberately left out of it.
+
+  A NOTE ON THE API KEY
+  ─────────────────────────────────────────────────────────────────────────
+  Notifications, Transfers and Scouting call Anthropic directly from the
+  browser using a key you paste in. It is stored in plain text, like
+  everything else in local storage. Use a key you can revoke.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Roster — Career Mode</title>
+<meta name="theme-color" content="#070C13">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="Personal career-mode planner">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Roster">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#070C13; --ink:#EDF2F7; --mute:#8B99A8; --dim:#5D6B7A;
+  --panel:rgba(255,255,255,.045); --panel2:rgba(255,255,255,.075);
+  --line:rgba(255,255,255,.09); --line2:rgba(255,255,255,.18);
+  --sel:#122A4C; --selline:#3E7BD1; --blue:#4D8BFF; --lime:#C8FF3F;
+  --C:#4D8BFF; --P:#A97BFF; --M:#F5C542; --R:#FF7A45; --B:#FF4D6D; --S:#8B99A8; --U:#2DD4BF; --D:#FF9EC7;
+  --nav:56px; --leg:44px;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html{-webkit-text-size-adjust:100%;background:var(--bg)}
+body{font-family:Archivo,system-ui,-apple-system,sans-serif;color:var(--ink);background:var(--bg);
+  font-size:14px;line-height:1.4;min-height:100vh;overflow-x:hidden;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;
+  overscroll-behavior-y:none}
+.bg{position:fixed;inset:0;z-index:-1;
+  background:radial-gradient(120% 80% at 50% -18%, #1B3252 0%, #0C1420 46%, #070C13 76%),
+   radial-gradient(60% 40% at 92% 8%, rgba(77,139,255,.16), transparent 70%)}
+.bg::after{content:"";position:absolute;inset:0;opacity:.5;
+  background-image:linear-gradient(rgba(255,255,255,.022) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.022) 1px,transparent 1px);
+  background-size:52px 52px;
+  -webkit-mask-image:radial-gradient(80% 60% at 50% 0%,#000,transparent 80%);
+  mask-image:radial-gradient(80% 60% at 50% 0%,#000,transparent 80%)}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:2px solid var(--lime);outline-offset:2px}
+svg{display:block}
+.ico{width:18px;height:18px;stroke:currentColor;stroke-width:1.7;fill:none;stroke-linecap:round;stroke-linejoin:round}
+
+.top{position:sticky;top:0;z-index:30;height:calc(var(--nav) + env(safe-area-inset-top));display:flex;align-items:center;gap:14px;
+  padding:0 18px;padding-top:env(safe-area-inset-top);background:linear-gradient(180deg,rgba(9,15,24,.94),rgba(9,15,24,.55));backdrop-filter:blur(14px)}
+.mark{position:relative;flex:none;width:30px;height:30px;border:1.5px solid var(--line2);border-radius:50%;display:grid;place-items:center;
+  font-size:10px;font-weight:900;letter-spacing:-.04em;color:var(--mute)}
+.mark::after{content:"";position:absolute;right:-3px;bottom:-3px;width:9px;height:9px;border-radius:50%;background:#5D6B7A;border:2px solid #0B1220}
+.mark[data-s="ok"]::after{background:var(--lime)}
+.mark[data-s="err"]::after{background:#FF4D6D}
+.navwrap{flex:1;min-width:0;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.navwrap::-webkit-scrollbar{display:none}
+.nav{display:flex;align-items:center;gap:2px;width:max-content}
+.nav button{position:relative;padding:8px 12px 7px;color:var(--dim);font-size:12.5px;font-weight:500;white-space:nowrap;
+  display:flex;flex-direction:column;align-items:center;gap:4px;transition:color .16s}
+.nav button .ico{width:15px;height:15px;opacity:.75}
+.nav button:hover{color:#B9C6D3}
+.nav button.on{color:#fff;font-weight:700}
+.nav button.on::after{content:"";position:absolute;left:12px;right:12px;bottom:0;height:2px;background:#fff;border-radius:2px}
+.nav .sep{width:1px;height:20px;background:var(--line);margin:0 8px;flex:none;align-self:center}
+.me{flex:none;display:flex;align-items:center;gap:9px}
+.crest{width:26px;height:26px;border-radius:50%;background:linear-gradient(150deg,#2B3D57,#101A28);
+  border:1px solid var(--line2);display:grid;place-items:center;font-size:11px;font-weight:900}
+.me .nm{font-size:12px;font-weight:600}
+.me .nm span{display:block;font-size:9px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--dim)}
+.pips{display:flex;gap:2px;margin-top:4px;justify-content:flex-end}
+.pips i{width:9px;height:3px;border-radius:2px;background:rgba(255,255,255,.16)}
+
+.stage{max-width:1240px;margin:0 auto;padding:26px 18px calc(var(--leg) + 34px + env(safe-area-inset-bottom))}
+.tab[hidden]{display:none}
+.tab{animation:in .28s ease both}
+@keyframes in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+h1.big{font-size:clamp(26px,4.6vw,40px);font-weight:800;letter-spacing:-.028em;text-transform:uppercase;line-height:1}
+.sub{margin-top:9px;font-size:12.5px;color:var(--mute)}
+.hr{height:1px;background:var(--line);margin:16px 0 18px}
+.eyebrow{font-size:9.5px;font-weight:800;letter-spacing:.2em;text-transform:uppercase;color:var(--dim)}
+.cols{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(0,1fr);gap:26px;align-items:start}
+
+.evt{display:flex;gap:16px;align-items:center;margin-bottom:20px}
+.evticon{flex:none;width:52px;height:52px;border-radius:12px;background:var(--panel2);border:1px solid var(--line);
+  display:grid;place-items:center}
+.evticon .ico{width:24px;height:24px}
+.evt h2{font-size:clamp(17px,2.6vw,23px);font-weight:800;text-transform:uppercase;letter-spacing:-.01em;line-height:1.12;max-width:20ch}
+.evt .tagline{font-size:11.5px;color:var(--mute);margin-top:5px;font-weight:500;text-transform:none;letter-spacing:0}
+
+.pillrow{display:flex;gap:9px;margin-bottom:16px;flex-wrap:wrap}
+.pill{border-radius:999px;padding:9px 22px;background:var(--panel2);border:1px solid var(--line);
+  font-size:12.5px;font-weight:600;transition:.15s}
+.pill:hover{background:rgba(255,255,255,.13);border-color:var(--line2)}
+.pill.key{background:#EDF2F7;color:#0A1018;border-color:#EDF2F7}
+.pill.key:hover{background:#fff}
+
+.acts{display:flex;flex-direction:column;gap:3px}
+.act{display:flex;align-items:center;gap:13px;padding:12px 14px;border-radius:8px;border:1px solid transparent;
+  text-align:left;width:100%;transition:.15s}
+.act .box{flex:none;width:30px;height:30px;border-radius:7px;background:rgba(255,255,255,.07);display:grid;place-items:center;color:var(--mute)}
+.act .lb{flex:1;min-width:0;font-size:13.5px;font-weight:600;color:#C3CFDB}
+.act .lb em{display:block;font-style:normal;font-size:11px;color:var(--dim);font-weight:500;margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.act .rt{flex:none;font-size:11px;font-weight:700;color:var(--dim);letter-spacing:.04em}
+.act:hover{background:rgba(255,255,255,.045)}
+.act.on{background:var(--sel);border-color:var(--selline);box-shadow:0 0 0 1px rgba(62,123,209,.25),0 6px 24px -8px rgba(62,123,209,.5)}
+.act.on .lb{color:#fff;font-weight:700}
+.act.on .box{background:rgba(77,139,255,.24);color:#9BC2FF}
+.act.done .lb{color:var(--dim);text-decoration:line-through}
+.act.done .box{background:rgba(200,255,63,.14);color:var(--lime)}
+
+.card{background:linear-gradient(180deg,rgba(255,255,255,.07),rgba(255,255,255,.035));border:1px solid var(--line);
+  border-radius:14px;overflow:hidden}
+.cardtop{display:flex;align-items:center;gap:10px;padding:13px 14px}
+.cardtop .crest{width:30px;height:30px}
+.cardtop b{font-size:12.5px;font-weight:700;display:flex;align-items:center;gap:5px}
+.cardtop span.dy{display:block;font-size:10.5px;color:var(--dim);margin-top:1px}
+.vf{width:13px;height:13px;border-radius:50%;background:var(--blue);display:grid;place-items:center;flex:none}
+.vf svg{width:8px;height:8px;stroke:#0A1018;stroke-width:3.4;fill:none}
+.new{margin-left:auto;background:var(--lime);color:#111A05;font-size:10px;font-weight:800;padding:3px 9px;border-radius:999px}
+.shot{aspect-ratio:16/10;position:relative;display:grid;place-items:center;padding:20px;text-align:center;overflow:hidden}
+.shot h3{font-size:clamp(20px,3.4vw,30px);font-weight:900;letter-spacing:-.03em;line-height:1;text-transform:uppercase;position:relative}
+.shot p{font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;margin-top:10px;opacity:.6;position:relative}
+.shot::before{content:"";position:absolute;inset:0;background:repeating-linear-gradient(115deg,rgba(255,255,255,.05) 0 2px,transparent 2px 15px)}
+.cap{padding:12px 14px;font-size:12.5px;color:#AFBCC9;line-height:1.5}
+.stats{display:flex;align-items:center;gap:14px;padding:11px 14px;border-top:1px solid var(--line);font-size:11.5px;color:var(--mute);font-weight:600}
+.stats .go{margin-left:auto;color:#C3CFDB;display:flex;align-items:center;gap:6px}
+.stats .go .ico{width:14px;height:14px}
+.feedview{overflow:hidden;touch-action:pan-y;cursor:grab}
+.feedview:active{cursor:grabbing}
+.feedtrack{display:flex;will-change:transform}
+.card{flex:0 0 100%;min-width:0;user-select:none}
+.card *{-webkit-user-drag:none}
+.dots{display:flex;gap:7px;justify-content:center;margin-top:14px;padding:6px 0}
+.dots i{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.22);transition:width .22s ease,background .22s ease;cursor:pointer}
+.dots i.on{width:20px;border-radius:3px;background:#fff;box-shadow:0 0 10px rgba(255,255,255,.45)}
+
+.slot{position:relative;border-radius:8px;overflow:hidden;background:#0A1017}
+.behind{position:absolute;inset:0;display:flex;align-items:center;justify-content:space-between;padding:0 15px}
+.behind span{display:flex;align-items:center;gap:7px;font-size:11px;font-weight:800;letter-spacing:.14em;
+  text-transform:uppercase;opacity:0;transition:opacity .12s}
+.behind .l{color:#0A1018}
+.behind .r{color:#fff}
+.behind .ico{width:15px;height:15px}
+.slot.pull-r .behind{background:linear-gradient(90deg,var(--act,#C8FF3F),rgba(255,255,255,.05))}
+.slot.pull-r .behind .l{opacity:1}
+.slot.pull-l .behind{background:linear-gradient(270deg,#FF4D6D,rgba(255,77,109,.08))}
+.slot.pull-l .behind .r{opacity:1}
+.act{background:#0C121A;will-change:transform;touch-action:pan-y}
+.act.done{background:#0A1017}
+.nowline{display:flex;align-items:center;gap:9px;margin:7px 2px}
+.nowline i{flex:none;width:7px;height:7px;border-radius:50%;background:var(--lime);box-shadow:0 0 0 4px rgba(200,255,63,.16)}
+.nowline .ln{flex:1;height:1px;background:linear-gradient(90deg,rgba(200,255,63,.5),transparent)}
+.nowline b{font-size:10px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--lime)}
+.act.late .rt{color:#FF4D6D}
+.tbtn{padding:5px 7px;margin:-5px -5px -5px 0;border-radius:7px;position:relative;z-index:2;transition:.15s}
+.tbtn:hover{background:rgba(255,255,255,.09);color:var(--ink)}
+.tbtn:active{transform:scale(.94)}
+.tbtn.moved{color:#9BC2FF}
+.tbtn.moved::after{content:"";position:absolute;top:2px;right:2px;width:4px;height:4px;border-radius:50%;background:var(--blue)}
+.hrs{display:grid;grid-template-columns:repeat(6,1fr);gap:5px}
+.hrs button{padding:9px 0;border-radius:8px;border:1px solid var(--line);font-size:12.5px;font-weight:700;color:var(--mute)}
+.hrs button.on{background:#EDF2F7;border-color:#EDF2F7;color:#0A1018}
+.mins{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.mins button{padding:11px 0;border-radius:9px;border:1px solid var(--line);font-size:13px;font-weight:800;color:var(--mute)}
+.mins button.on{background:#EDF2F7;border-color:#EDF2F7;color:#0A1018}
+.tprev{font-size:30px;font-weight:900;letter-spacing:-.03em;margin-top:2px}
+.tprev span{font-size:12px;font-weight:700;color:var(--dim);letter-spacing:0;margin-left:9px}
+.qa{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;padding:2px 0}
+.qa::-webkit-scrollbar{display:none}
+.qc{flex:none;display:flex;align-items:center;gap:7px;padding:9px 13px;border-radius:999px;
+  background:rgba(255,255,255,.05);border:1px solid var(--line);font-size:12px;font-weight:600;white-space:nowrap}
+.qc i{width:7px;height:7px;border-radius:50%;background:var(--tc)}
+.qc.custom{border-style:dashed;color:var(--mute)}
+.qc:active{background:rgba(255,255,255,.12)}
+.qc .ico{width:14px;height:14px}
+.warnbar{display:flex;gap:11px;align-items:flex-start;padding:13px 14px;margin-bottom:16px;border-radius:11px;
+  background:rgba(255,77,109,.11);border:1px solid rgba(255,77,109,.45);font-size:12.5px;line-height:1.55;color:#FFC2CD}
+.warnbar b{color:#FF8FA3}
+.warnbar .ico{flex:none;width:17px;height:17px;color:#FF8FA3;margin-top:1px}
+.okline{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--mute);padding:11px 0}
+.okline i{width:8px;height:8px;border-radius:50%;flex:none}
+
+#toast{position:fixed;left:50%;bottom:calc(var(--leg) + 12px + env(safe-area-inset-bottom));transform:translate(-50%,180%);z-index:70;
+  width:calc(100% - 28px);max-width:460px;display:flex;align-items:center;gap:12px;padding:13px 14px;border-radius:12px;
+  background:#141C26;border:1px solid var(--line2);box-shadow:0 14px 40px -12px rgba(0,0,0,.8);overflow:hidden;
+  transition:transform .26s cubic-bezier(.22,.61,.36,1)}
+#toast.on{transform:translate(-50%,0)}
+#toast i.fl{flex:none;width:3px;height:26px;border-radius:2px;background:var(--tc)}
+#toast .g{flex:1;min-width:0}
+#toast .g b{display:block;font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#toast .g em{display:block;font-style:normal;font-size:10px;color:var(--dim);margin-top:3px;letter-spacing:.12em;
+  text-transform:uppercase;font-weight:800}
+#toast button{flex:none;padding:9px 16px;border-radius:999px;background:var(--lime);color:#111A05;font-size:11.5px;
+  font-weight:800;letter-spacing:.1em;text-transform:uppercase}
+#toast .bar{position:absolute;left:0;bottom:0;height:2px;background:var(--lime);width:100%;
+  transform-origin:left;animation:drain 6s linear forwards}
+@keyframes drain{to{transform:scaleX(0)}}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chipb{padding:8px 13px;border-radius:999px;border:1px solid var(--line);font-size:12px;font-weight:700;color:var(--mute)}
+.chipb.on{background:var(--cc,#EDF2F7);border-color:var(--cc,#EDF2F7);color:#0A1018}
+.sheet input{width:100%;font:inherit;font-size:15px;font-weight:600;color:var(--ink);background:rgba(0,0,0,.3);
+  border:1px solid var(--line2);border-radius:9px;padding:12px}
+.sheet .lbl{font-size:9.5px;font-weight:800;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);margin:15px 0 8px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.ph{display:flex;align-items:center;gap:10px;padding:12px 15px;border-bottom:1px solid var(--line)}
+.ph b{font-size:11px;font-weight:800;letter-spacing:.16em;text-transform:uppercase}
+.ph .rt{margin-left:auto;font-size:11px;color:var(--dim);font-weight:600}
+.rows{display:flex;flex-direction:column}
+.r{display:flex;align-items:center;gap:12px;padding:12px 15px;border-top:1px solid var(--line);text-align:left;width:100%;transition:background .14s}
+.r:first-child{border-top:0}
+.r:hover{background:rgba(255,255,255,.035)}
+.r.sel{background:var(--sel);box-shadow:inset 2px 0 0 var(--selline)}
+.flag{flex:none;width:3px;height:26px;border-radius:2px;background:var(--tc)}
+.grow{flex:1;min-width:0}
+.grow b{display:block;font-size:13.5px;font-weight:700;letter-spacing:-.005em}
+.grow em{display:block;font-style:normal;font-size:11.5px;color:var(--dim);margin-top:3px}
+.num{flex:none;font-size:12px;font-weight:700;color:var(--mute)}
+.chip{flex:none;font-size:9.5px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;padding:3px 8px;border-radius:5px;
+  border:1px solid var(--line2);color:var(--mute);white-space:nowrap}
+.chip.hot{color:#FF8FA3;border-color:rgba(255,77,109,.5);background:rgba(255,77,109,.1)}
+.chip.ok{color:var(--lime);border-color:rgba(200,255,63,.4);background:rgba(200,255,63,.08)}
+.ovr{flex:none;width:44px;text-align:center}
+.ovr b{display:block;font-size:20px;font-weight:900;line-height:1;letter-spacing:-.04em}
+.ovr span{display:block;font-size:8px;font-weight:800;letter-spacing:.14em;color:var(--dim);margin-top:3px}
+.bar{height:4px;border-radius:3px;background:rgba(255,255,255,.1);overflow:hidden}
+.bar i{display:block;height:100%;background:var(--tc,#fff);border-radius:3px}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:start}
+.grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:13px 14px}
+.stat b{display:block;font-size:24px;font-weight:900;letter-spacing:-.035em;line-height:1}
+.stat span{display:block;margin-top:6px;font-size:9.5px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+.note{font-size:12.5px;color:var(--mute);line-height:1.6}
+.sechead{display:flex;align-items:center;gap:12px;margin:24px 0 11px}
+.sechead .rule{flex:1;height:1px;background:var(--line)}
+.form{display:flex;gap:7px;flex-wrap:wrap}
+.fp{flex:1;min-width:56px;background:var(--panel);border:1px solid var(--line);border-top:2px solid var(--fc);
+  border-radius:9px;padding:9px 8px;text-align:center}
+.fp b{display:block;font-size:17px;font-weight:900;line-height:1;color:var(--fc)}
+.fp span{display:block;margin-top:5px;font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+.fp em{display:block;font-style:normal;margin-top:3px;font-size:10px;font-weight:700;color:var(--mute)}
+.res{flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;
+  font-size:12px;font-weight:900;color:#0A1018;background:var(--fc)}
+.score{flex:none;font-size:15px;font-weight:900;letter-spacing:-.02em;color:var(--ink);min-width:44px;text-align:right}
+
+.attr{display:grid;grid-template-columns:1fr auto;gap:6px 12px;align-items:center;padding:9px 15px;border-top:1px solid var(--line)}
+.attr .k{font-size:12px;color:#B4C1CE;font-weight:600}
+.attr .v{font-size:12px;font-weight:800}
+.attr .bar{grid-column:1/-1}
+.stars{letter-spacing:.1em;font-size:12px;color:var(--lime);white-space:nowrap}
+.stars .off{color:rgba(255,255,255,.18)}
+
+.mailbody{padding:16px 17px}
+.mailbody h3{font-size:16px;font-weight:800;letter-spacing:-.01em;margin-bottom:5px}
+.mailbody .from{font-size:10.5px;color:var(--dim);margin-bottom:12px;letter-spacing:.14em;text-transform:uppercase;font-weight:800}
+.mailbody p{font-size:13px;color:#B4C1CE;line-height:1.62;margin-bottom:12px}
+.unread{flex:none;width:7px;height:7px;border-radius:50%;background:var(--blue)}
+textarea{width:100%;min-height:118px;font:inherit;font-size:13px;line-height:1.55;color:var(--ink);
+  background:rgba(0,0,0,.28);border:1px solid var(--line2);border-radius:9px;padding:12px;resize:vertical}
+textarea::placeholder{color:#4E5C6B}
+.qm{flex:none;width:34px;height:34px;margin:-6px -8px -6px 0;border-radius:50%;color:var(--dim);
+  display:grid;place-items:center;font-size:0;line-height:1;transition:.15s;
+  background:none;border:0;position:relative;z-index:2;touch-action:manipulation}
+.qm::before{content:'?';position:absolute;width:22px;height:22px;border-radius:50%;border:1px solid var(--line2);
+  display:grid;place-items:center;pointer-events:none;font-size:11px;font-weight:800}
+.qm:hover::before{color:var(--ink);border-color:var(--ink);background:rgba(255,255,255,.07)}
+.qm:active::before{transform:scale(.9)}
+.qm.on::before{background:var(--lime);border-color:var(--lime);color:#111A05}
+.how{padding:2px 15px 15px 30px;border-top:1px solid var(--line);background:rgba(0,0,0,.18)}
+.how .ttl{font-size:10px;font-weight:800;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);margin:13px 0 8px}
+.how p{font-size:12.5px;color:#B4C1CE;line-height:1.6;margin-bottom:9px;padding-left:13px;position:relative}
+.how p:last-child{margin-bottom:0}
+.how p::before{content:"";position:absolute;left:0;top:8px;width:5px;height:5px;border-radius:50%;background:var(--tc,#4D8BFF)}
+.pill.warn{background:#FF4D6D;color:#fff;border-color:#FF4D6D}
+.pill.warn:hover{background:#FF6B85}
+.act{cursor:pointer}
+.act:active{transform:scale(.995)}
+.act.on{transition:background .22s ease,border-color .22s ease,box-shadow .22s ease}
+#modal{position:fixed;inset:0;z-index:60;display:none;align-items:flex-end;justify-content:center;
+  background:rgba(4,7,12,.72);backdrop-filter:blur(3px);padding:16px;padding-bottom:calc(16px + env(safe-area-inset-bottom))}
+#modal.open{display:flex;animation:in .18s ease both}
+.sheet{width:100%;max-width:440px;background:#0E141C;border:1px solid var(--line2);border-radius:14px;padding:18px}
+.sheet h3{font-size:17px;font-weight:800;letter-spacing:-.01em;margin-bottom:9px}
+.sheet .from{font-size:10.5px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:#FF8FA3;margin-bottom:6px}
+@media(min-width:620px){#modal{align-items:center}}
+textarea:focus{outline:2px solid var(--lime);outline-offset:1px}
+
+.legend{position:fixed;left:0;right:0;bottom:0;z-index:30;height:calc(var(--leg) + env(safe-area-inset-bottom));display:flex;align-items:center;gap:18px;
+  padding:0 18px env(safe-area-inset-bottom);overflow-x:auto;scrollbar-width:none;
+  background:linear-gradient(0deg,rgba(7,12,19,.97),rgba(7,12,19,.72));backdrop-filter:blur(12px);border-top:1px solid var(--line)}
+.legend::-webkit-scrollbar{display:none}
+.lg{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--mute);white-space:nowrap;font-weight:500}
+.lg i{width:16px;height:16px;border-radius:50%;border:1.4px solid var(--line2);display:grid;place-items:center;
+  font-size:8px;font-style:normal;color:#C3CFDB;flex:none}
+.lg.rt{margin-left:auto}
+.phrow{display:flex;align-items:center;gap:12px;padding:11px 15px;border-top:1px solid var(--line)}
+.phrow b{flex:1;font-size:13px;font-weight:700}
+.phrow b em{display:block;font-style:normal;font-size:11px;color:var(--dim);font-weight:500;margin-top:2px}
+.phrow.now{background:var(--sel);box-shadow:inset 2px 0 0 var(--lime)}
+
+@media(max-width:900px){.cols{grid-template-columns:minmax(0,1fr);gap:22px}.grid2{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:620px){
+  .top{padding:0 12px;padding-top:env(safe-area-inset-top);gap:9px}
+  .me .nm{display:none}
+  .stage{padding:20px 12px calc(var(--leg) + 26px + env(safe-area-inset-bottom))}
+  .nav button{padding:8px 9px 7px;font-size:12px}
+  .nav button .ico{display:none}
+  .nav .sep{margin:0 5px}
+  .evticon{width:44px;height:44px}
+}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="bg"></div>
+
+<header class="top">
+  <div class="mark" id="mark" data-s="">RS</div>
+  <div class="navwrap"><div class="nav" id="nav"></div></div>
+  <div class="me">
+    <div style="text-align:right">
+      <div class="nm">Ben<span id="meSub"></span></div>
+      <div class="pips" id="pips"></div>
+    </div>
+    <div class="crest">B</div>
+  </div>
+</header>
+
+<main class="stage">
+  <div id="storeWarn"></div>
+
+<section class="tab" id="t-home">
+  <div class="cols">
+    <div>
+      <h1 class="big" id="hDate"></h1>
+      <div class="sub" id="hNext"></div>
+      <div class="hr"></div>
+      <div class="evt">
+        <div class="evticon" id="hIcon"></div>
+        <div><h2 id="hTitle"></h2><div class="tagline" id="hTag"></div></div>
+      </div>
+      <div class="pillrow">
+        <button class="pill key" id="hAdvance">Advance</button>
+        <button class="pill" id="hSkip">Not today</button>
+      </div>
+      <div class="sechead" style="margin-top:22px"><div class="eyebrow">Today&rsquo;s schedule</div><div class="rule"></div><div class="eyebrow" id="hCount"></div></div>
+      <div class="acts" id="hActs"></div>
+      <div id="hAside"></div>
+      <div class="sechead"><div class="eyebrow">Quick add</div><div class="rule"></div><div class="eyebrow">Off-plan work</div></div>
+      <div class="qa" id="qa"></div>
+      <div class="sechead"><div class="eyebrow">Form</div><div class="rule"></div><div class="eyebrow">Last 5 days</div></div>
+      <div class="form" id="hForm"></div>
+    </div>
+    <div>
+      <div class="eyebrow" style="margin-bottom:10px">Feed</div>
+      <div class="feedview" id="feed"><div class="feedtrack" id="ftrack"></div></div>
+      <div class="dots" id="dots"></div>
+    </div>
+  </div>
+</section>
+
+<section class="tab" id="t-central" hidden>
+  <h1 class="big">The Week</h1>
+  <div class="sub" id="cSub"></div>
+  <div class="hr"></div>
+  <div class="pillrow">
+    <button class="pill" id="cPrev">&lsaquo; Previous</button>
+    <button class="pill" id="cNext">Next &rsaquo;</button>
+    <button class="pill" id="cNow">This week</button>
+  </div>
+  <div class="grid3" id="cStats"></div>
+  <div class="sechead"><div class="eyebrow">Marks this week</div><div class="rule"></div><div class="eyebrow" id="cMkCount"></div></div>
+  <div class="panel"><div class="rows" id="cMarks"></div></div>
+  <div class="sechead"><div class="eyebrow">Results</div><div class="rule"></div><div class="eyebrow" id="cResCount"></div></div>
+  <div id="cResults"></div>
+  <div class="sechead"><div class="eyebrow">Fixtures</div><div class="rule"></div><div class="eyebrow" id="cFixCount"></div></div>
+  <div id="cDays"></div>
+</section>
+
+<section class="tab" id="t-notif" hidden>
+  <h1 class="big">Notifications</h1>
+  <div class="sub" id="nSub"></div>
+  <div class="hr"></div>
+  <div class="grid2">
+    <div>
+      <div class="panel" style="margin-bottom:16px">
+        <div class="ph"><b>Write to your assistant manager</b><span class="rt">Nobody else reads this</span></div>
+        <div class="mailbody">
+          <textarea id="dmpText" placeholder="Worries, half-ideas, the thing you keep forgetting. No structure needed &mdash; sort it after."></textarea>
+          <div class="pillrow" style="margin:12px 0 0">
+            <button class="pill key" id="dmpSort">Send it</button>
+            <button class="pill" id="dmpSave">Just save it</button>
+          </div>
+          <p class="note" id="dmpSpin" style="margin-top:10px;display:none">Reading&hellip;</p>
+          <div id="dmpOut"></div>
+        </div>
+      </div>
+      <div class="panel"><div class="ph"><b>Inbox</b><span class="rt" id="nCount"></span></div><div class="rows" id="nList"></div></div>
+    </div>
+    <div class="panel"><div class="mailbody" id="nBody"></div></div>
+  </div>
+</section>
+
+<section class="tab" id="t-squad" hidden>
+  <h1 class="big">Squad</h1>
+  <div class="sub">Five tracks, two creative subs and the admin bench. Ratings are your own honest read, not a score from anywhere.</div>
+  <div class="hr"></div>
+  <div class="grid2">
+    <div class="panel"><div class="ph"><b>The squad</b><span class="rt">Now &middot; April</span></div><div class="rows" id="sList"></div></div>
+    <div class="panel" id="sDetail"></div>
+  </div>
+</section>
+
+<section class="tab" id="t-transfers" hidden>
+  <h1 class="big">Transfers</h1>
+  <div class="sub">The window opens when a week stops working. Missing one week is fine. Missing three in a row means the plan is wrong, not you.</div>
+  <div class="hr"></div>
+  <div class="grid3" id="trForm"></div>
+  <div class="sechead"><div class="eyebrow">Last seven days</div><div class="rule"></div><div class="eyebrow" id="trQuiet"></div></div>
+  <div class="panel"><div class="rows" id="trLog"></div></div>
+  <div class="sechead"><div class="eyebrow">Why it happened</div><div class="rule"></div></div>
+  <div class="panel"><div class="mailbody">
+    <textarea id="trWhy" placeholder="What actually got in the way? One or two lines is enough."></textarea>
+    <div class="pillrow" style="margin:12px 0 0"><button class="pill key" id="trGo">Open the window</button></div>
+    <p class="note" id="trSpin" style="margin-top:10px;display:none">Thinking&hellip;</p>
+  </div></div>
+  <div id="trOut"></div>
+</section>
+
+<section class="tab" id="t-academy" hidden>
+  <h1 class="big">Academy</h1>
+  <div class="sub">Skills in development. Potential is what they are worth by April, not today.</div>
+  <div class="hr"></div>
+  <div class="panel"><div class="ph"><b>Prospects</b><span class="rt">Now &middot; potential &middot; ready</span></div><div class="rows" id="acList"></div></div>
+  <div class="sechead"><div class="eyebrow">Scout&rsquo;s note</div><div class="rule"></div></div>
+  <div class="panel"><div class="mailbody"><p class="note" id="acNote"></p></div></div>
+</section>
+
+<section class="tab" id="t-scout" hidden>
+  <h1 class="big">Scouting</h1>
+  <div class="sub">Goals you have not thought of, judged against the five you already run. Nothing here is a commitment until you sign it.</div>
+  <div class="hr"></div>
+  <div class="panel">
+    <div class="ph"><b>Scouting brief</b><span class="rt">Filters</span></div>
+    <div class="mailbody" style="padding-bottom:8px">
+      <div class="eyebrow" style="margin-bottom:8px">Where to look</div>
+      <div class="pillrow" id="scWhere"></div>
+      <div class="eyebrow" style="margin:14px 0 8px">How much room you have</div>
+      <div class="pillrow" id="scCost"></div>
+      <div class="eyebrow" style="margin:14px 0 8px">What you want out of it</div>
+      <div class="pillrow" id="scAim"></div>
+      <div class="pillrow" style="margin:16px 0 0">
+        <button class="pill key" id="scGo">Send the scouts</button>
+      </div>
+      <p class="note" id="scSpin" style="margin-top:10px;display:none">Watching&hellip;</p>
+    </div>
+  </div>
+  <div class="sechead"><div class="eyebrow">Scout reports</div><div class="rule"></div><div class="eyebrow" id="scCount"></div></div>
+  <div id="scList"></div>
+  <div class="sechead"><div class="eyebrow">Signed</div><div class="rule"></div><div class="eyebrow" id="scSignedCount"></div></div>
+  <div class="panel"><div class="rows" id="scSigned"></div></div>
+</section>
+
+<section class="tab" id="t-office" hidden>
+  <h1 class="big">Office</h1>
+  <div class="sub">Objectives, contract, and the rule for when a week collapses.</div>
+  <div class="hr"></div>
+  <div class="grid3" id="ofStats"></div>
+  <div class="sechead"><div class="eyebrow">Objectives</div><div class="rule"></div><div class="eyebrow" id="ofCount"></div></div>
+  <div class="panel"><div class="rows" id="ofList"></div></div>
+  <div class="sechead"><div class="eyebrow">Contract</div><div class="rule"></div></div>
+  <div class="panel"><div class="mailbody" id="ofContract"></div></div>
+  <div class="sechead"><div class="eyebrow">Finances</div><div class="rule"></div></div>
+  <div id="ofMoney"></div>
+  <div class="grid2" style="margin-top:16px">
+    <div class="panel"><div class="ph"><b>Deals in progress</b><span class="rt">Before any change</span></div><div class="rows" id="ofDeals"></div></div>
+    <div class="panel"><div class="ph"><b>Learning ladder</b><span class="rt">One step a month</span></div><div class="rows" id="ofShort"></div></div>
+  </div>
+</section>
+
+<section class="tab" id="t-custom" hidden>
+  <h1 class="big">Customise</h1>
+  <div class="sub">Phases, anchors, and your data. Everything lives on this device.</div>
+  <div class="hr"></div>
+  <div class="grid2">
+    <div class="panel" id="cuMachine"></div>
+    <div class="panel"><div class="ph"><b>Daily anchors</b><span class="rt">Set these once in your phone</span></div><div class="rows" id="cuAnchors"></div></div>
+  </div>
+  <div class="sechead"><div class="eyebrow">App</div><div class="rule"></div></div>
+  <div class="panel"><div class="mailbody" id="cuInstall"></div></div>
+  <div class="sechead"><div class="eyebrow">Storage</div><div class="rule"></div></div>
+  <div class="panel"><div class="mailbody" id="cuStore"></div></div>
+  <div class="panel" style="margin-top:12px"><div class="ph"><b>Saved copies</b><span class="rt">One per day · last 7</span></div><div class="rows" id="cuSnaps"></div></div>
+  <div class="sechead"><div class="eyebrow">Data</div><div class="rule"></div></div>
+  <div class="panel"><div class="mailbody">
+    <p class="note">The app already keeps its own copies. A backup file is the one you control: keep it in Files, Drive or send it to yourself, and it survives losing the phone.</p>
+    <div class="pillrow" style="margin:14px 0 0">
+      <button class="pill key" id="cuExport">Export backup</button>
+      <button class="pill" id="cuImport">Import backup</button>
+      <button class="pill" id="cuReset">Clear today&rsquo;s ticks</button>
+    </div>
+    <input id="cuFile" type="file" accept="application/json,.json" hidden>
+    <p class="note" id="cuMsg" style="margin-top:12px"></p>
+  </div></div>
+  <div class="sechead"><div class="eyebrow">Assistant manager</div><div class="rule"></div></div>
+  <div class="panel"><div class="mailbody">
+    <p class="note">Notifications, Transfers and Scouting call Claude directly from this app. Paste an Anthropic API key to switch them on. It is stored on this device only, so use one you can revoke.</p>
+    <input id="cuKey" type="password" placeholder="sk-ant-..." style="width:100%;font:inherit;font-size:13px;color:var(--ink);background:rgba(0,0,0,.25);border:1px solid var(--line2);border-radius:9px;padding:11px;margin-top:12px">
+    <div class="pillrow" style="margin:12px 0 0"><button class="pill" id="cuKeySave">Save key</button></div>
+    <p class="note" id="cuKeyMsg" style="margin-top:10px"></p>
+  </div></div>
+</section>
+
+</main>
+
+<div id="modal"></div>
+<div id="toast"></div>
+<footer class="legend" id="legend"></footer>
+<script>
+/* ==========================================================================
+   LAYER 1 · THE PLAN — everything below here is a constant
+   ========================================================================== */
+
+var I={
+ home:'<path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9.5V21h13V9.5"/>',
+ grid:'<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+ mail:'<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 7 8.5 6 8.5-6"/>',
+ users:'<circle cx="9" cy="8" r="3.2"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 5.5a3.2 3.2 0 0 1 0 6"/><path d="M17 14.5a6.5 6.5 0 0 1 4.5 5.5"/>',
+ swap:'<path d="M4 8h13l-3.5-3.5"/><path d="M20 16H7l3.5 3.5"/>',
+ star:'<path d="m12 3.5 2.7 5.6 6.1.9-4.4 4.3 1 6.1-5.4-2.9-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z"/>',
+ case:'<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8.5 7V5.5a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2V7"/><path d="M3 12h18"/>',
+ cog:'<circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.2 5.2l2.1 2.1M16.7 16.7l2.1 2.1M18.8 5.2l-2.1 2.1M7.3 16.7l-2.1 2.1"/>',
+ code:'<path d="m9 7.5-5 4.5 5 4.5"/><path d="m15 7.5 5 4.5-5 4.5"/>',
+ target:'<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.6"/>',
+ coin:'<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v9M9.5 10h5M9.5 14h5"/>',
+ book:'<path d="M4 4.5h10a3 3 0 0 1 3 3V20H7a3 3 0 0 1-3-3z"/><path d="M17 7.5h3V20"/>',
+ lift:'<path d="M3 9v6M6.5 6.5v11M17.5 6.5v11M21 9v6M6.5 12h11"/>',
+ check:'<path d="m4 12.5 5 5 11-11"/>',
+ clock:'<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5.2l3.2 2"/>',
+ eye:'<circle cx="7.5" cy="13.5" r="4"/><circle cx="16.5" cy="13.5" r="4"/><path d="M11.5 13.5h1"/><path d="M5.5 9.5 7 5h3l-.5 4.5M18.5 9.5 17 5h-3l.5 4.5"/>',
+ arrow:'<path d="M5 12h13"/><path d="m13 6.5 5.5 5.5L13 17.5"/>',
+ plus:'<path d="M12 5v14M5 12h14"/>',
+ flag:'<path d="M5 21V4.5h13l-2.5 4 2.5 4H5"/>',
+ undo:'<path d="M4 9h11a5 5 0 0 1 0 10H9"/><path d="m8 5-4 4 4 4"/>',
+ music:'<path d="M9 18V5.5l11-2V16"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>',
+ pen:'<path d="M4 20l4.5-1 10.2-10.2a2.1 2.1 0 0 0-3-3L5.5 16z"/><path d="m13.7 7.3 3 3"/>'
+};
+function svg(k,cls){
+  if(!I[k]){if(typeof console!=='undefined')console.warn('roster: missing icon "'+k+'"');return ''}
+  return '<svg class="'+(cls||'ico')+'" viewBox="0 0 24 24">'+I[k]+'</svg>';
+}
+
+/* ==========================================================================
+   Tracks, calendar, and phases
+   Track keys are unchanged from v1 so stored blocks keep their colour:
+   R used to be Russian and is now Languages (Hebrew + English).
+   ========================================================================== */
+var TR={C:'AI Coding',P:'Psychometric',M:'Money',R:'Languages',B:'Body',U:'Music',D:'Drawing',S:'Admin'};
+var COL={C:'#4D8BFF',P:'#A97BFF',M:'#F5C542',R:'#FF7A45',B:'#FF4D6D',U:'#2DD4BF',D:'#FF9EC7',S:'#8B99A8'};
+var TICON={C:'code',P:'target',M:'coin',R:'book',B:'lift',U:'music',D:'pen',S:'case'};
+
+var START=new Date('2026-08-09T00:00:00');           /* plan v1 began */
+var PREK='2026-10-18';                                /* pre-season began */
+var V2K='2026-11-01', P2K='2026-12-20', P3K='2027-01-31',
+    SPRINTK='2027-04-01', ENDK='2027-04-19';
+var OUT=new Date('2027-03-31T00:00:00'), EXAM=new Date('2027-04-18T00:00:00');
+var PHASES=[
+ ['Phase 1','Foundations',V2K,'2026-12-19','AI coding owns the surplus — the agents course. Psychometric builds a base.'],
+ ['Phase 2','Build',P2K,'2027-01-30','The stock project. Psychometric rises to ~3.5 h a week.'],
+ ['Phase 3','Ramp',P3K,'2027-03-31','Psychometric owns the surplus. Coding moves to the pilot.'],
+ ['Phase 4','Sprint',SPRINTK,'2027-04-18','Out of uniform. Psychometric full days, then the exam.']
+];
+var COLLAPSE='Music and Drawing go first — they are secondary. Then shoulder prep and two training sessions first. Fifteen minutes of vocab second. One psychometric block third — from February it moves to first. Everything else is optional that week.';
+
+/* ==========================================================================
+   LEGACY — plan v1 (9 Aug → 17 Oct). Read-only history. Do not edit:
+   ticks from those days point at these blocks by position.
+   ========================================================================== */
+var W1={
+'2026-08-09':{label:'Duty day 1',heavy:1,b:[['06:15','R',15,'Install Anki + a Russian frequency deck',''],['12:30','S',20,'Find the December psychometric deadline',''],['19:00','P',45,'Psychometric drills — first session',''],['20:45','C',45,'Create GitHub + connect Claude Code',''],['22:30','S',5,'Food log — day 1','']]},
+'2026-08-10':{label:'Duty day 2',heavy:1,b:[['06:15','R',15,'Cyrillic К–Т',''],['12:30','M',20,'Draft the Investment Policy Statement',''],['19:00','B',75,'Training',''],['20:45','C',45,'First cloud session — something tiny',''],['22:30','S',5,'Food log — day 2','']]},
+'2026-08-11':{label:'Duty day 3',heavy:1,b:[['06:15','R',15,'Cyrillic У–Я',''],['12:30','S',20,'Book the tax advisor + file W-8BEN',''],['19:00','P',45,'Psychometric drills — first session',''],['20:00','C',45,'SQL on the phone — SELECT, WHERE, ORDER BY',''],['21:30','S',10,'Food log — day 3, then total it','']]},
+'2026-08-12':{label:'Duty day 4',heavy:1,b:[['06:15','R',15,'First 50 words into Anki',''],['12:30','M',20,'Finish the IPS',''],['19:00','B',75,'Training',''],['20:45','C',45,'Cloud session — small script, read the diff',''],['22:15','S',10,'Prep tomorrow','']]},
+'2026-08-13':{label:'Home — light',heavy:0,b:[['08:30','R',15,'Anki + review the alphabet',''],['10:00','P',150,'Full psychometric diagnostic',''],['14:00','P',30,'Score it and log it','']]},
+'2026-08-14':{label:'Home — light',heavy:0,b:[['09:30','R',15,'Anki',''],['10:30','B',75,'Training',''],['17:00','M',45,'Start financial statement analysis',''],['19:00','S',20,'Draft the October message','']]},
+'2026-08-15':{label:'Home — light',heavy:0,b:[['10:00','R',15,'Anki',''],['11:00','B',75,'Training',''],['13:00','C',45,'Spec the investing tool',''],['14:00','M',30,'Price the laptop, then split the 25k',''],['20:00','S',15,'Week reset','']]}};
+var P0={
+0:{label:'Duty day 1',heavy:1,b:[['06:15','R',15,'Russian — Anki + course',''],['12:30','P',30,'Psychometric drills',''],['19:00','P',45,'Psychometric drills — long set',''],['20:45','C',45,'Claude Code on the web','']]},
+1:{label:'Duty day 2',heavy:1,b:[['06:15','R',15,'Russian — Anki + course',''],['12:30','M',20,'Finance reading',''],['19:00','B',75,'Training',''],['20:45','P',45,'Psychometric drills','']]},
+2:{label:'Duty day 3',heavy:1,b:[['06:15','R',15,'Russian — Anki + course',''],['12:30','P',45,'Psychometric drills',''],['19:30','C',60,'SQL on the phone',''],['21:00','S',10,'Log the week so far','']]},
+3:{label:'Duty day 4',heavy:1,b:[['06:15','R',15,'Russian — Anki + course',''],['12:30','P',30,'Psychometric drills',''],['19:00','B',75,'Training',''],['20:45','C',45,'Claude Code on the web','']]},
+4:{label:'Home — light',heavy:0,b:[['08:30','R',15,'Russian — Anki',''],['10:00','P',120,'Full timed section','']]},
+5:{label:'Home — light',heavy:0,b:[['09:30','R',15,'Russian — Anki',''],['10:30','B',75,'Training',''],['17:00','M',45,'Finance reading','']]},
+6:{label:'Home — light',heavy:0,b:[['10:00','R',15,'Russian — Anki',''],['11:00','B',75,'Training',''],['13:00','C',45,'Read code / work the flagship spec',''],['14:00','M',30,'Company research',''],['20:00','S',15,'Week reset','']]}};
+var PA=JSON.parse(JSON.stringify(P0));
+PA[0].b=[['06:15','R',15,'Russian — Anki + course',''],['12:30','P',20,'Psychometric drills',''],['19:00','C',90,'Coding block',''],['21:00','P',30,'Psychometric drills','']];
+PA[2].b=[['06:15','R',15,'Russian — Anki + course',''],['12:30','P',45,'Psychometric drills',''],['19:00','C',120,'Coding block','']];
+PA[3].b=[['06:15','R',15,'Russian — Anki + course',''],['19:00','B',75,'Training',''],['20:45','C',90,'Coding block',''],['22:15','S',10,'Log the week so far','']];
+PA[6].b=[['10:00','R',15,'Russian — Anki',''],['11:00','B',75,'Training',''],['13:00','C',45,'Coding book or a talk',''],['14:00','M',30,'Company research',''],['20:00','S',15,'Week reset','']];
+var EMPTY={label:'Before the plan',heavy:0,b:[]};
+var AFTER={label:'After the exam',heavy:0,b:[]};
+
+/* ==========================================================================
+   PLAN v2 — date-keyed days first, then the three weekly templates,
+   then the sprint generator. Sun–Wed on base, Thu–Sat home.
+   Gym: Mon, Wed, Fri, Sat. Rest days get the 15-minute routine.
+   ========================================================================== */
+function voc(t,note){return [t||'06:15','R',15,'Vocab — Anki + shadowing',note||'']}
+
+/* 18–31 Oct: pre-season, nothing scheduled. */
+var PRESEASON={label:'Pre-season',heavy:0,b:[]};
+
+var V2DAYS={
+'2026-11-01':{label:'v2 · day 1',heavy:1,b:[
+ ['19:00','S',20,'Read the new plan','Start Here, then Timeline. Ten minutes each.'],
+ ['19:30','P',20,'Look at the April test format','nite.org.il. What the two-domain test is. No registering yet.'],
+ ['20:00','C',30,'Get the agents course from your dad','Count the lessons. Divide by seven weeks (to 19 Dec).'],
+ ['20:45','B',15,'Shoulder & mobility routine','First time through. Learn the moves, no load.'],
+ ['21:15','S',10,'Calendar the new anchors','Customise lists them. Real alerts, not intentions.']]},
+'2026-11-02':{label:'Duty day 2',heavy:1,b:[
+ ['06:15','R',15,'Set up the vocab deck — Hebrew + English','Repurpose the Russian habit. 15 Hebrew + 10 English a week.'],
+ ['12:30','B',10,'Ask the unit doctor for a physio referral','Two dislocations. Free while you serve, and it gets documented.'],
+ ['19:00','B',75,'Training','Shoulder prep first — from today, every session.'],
+ ['20:45','C',45,'Agents course — lesson 1','One commit when it is done.']]},
+'2026-11-03':{label:'Duty day 3',heavy:1,b:[
+ voc(),
+ ['12:30','M',20,'Stock book — 15 pages','Finished by 30 Nov.'],
+ ['19:00','R',15,'Accent baseline — record 3 minutes','A fixed 2-minute passage + 1 minute free talk. Keep the passage.'],
+ ['19:30','C',75,'Agents course — next lesson','']]},
+'2026-11-04':{label:'Duty day 4',heavy:1,b:[
+ voc(),
+ ['12:30','M',20,'Book the cross-border tax hour','US–Israel advisor. Before 31 Dec, before any allocation change.'],
+ ['19:00','B',75,'Training',''],
+ ['20:45','S',15,'Prep tomorrow','Download an official two-domain practice test. Timer ready.']]},
+'2026-11-05':{label:'Home',heavy:0,b:[
+ voc('08:30'),
+ ['10:00','P',150,'Psychometric diagnostic — full timed','Two-domain format, writing task included. Measurement only.'],
+ ['14:00','P',30,'Score it and log it','Section by section. Open the mistakes log.'],
+ ['17:00','R',30,'Pick the two books — one Hebrew, one English','Start both today.']]},
+'2026-11-06':{label:'Home',heavy:0,b:[
+ voc('09:30'),
+ ['10:30','B',45,'Body baseline tests','The eight-test battery. Write every number down.'],
+ ['11:30','B',45,'Training','Lighter today — the tests were the hard part.'],
+ ['13:00','P',60,'Psychometric — format block','Start with the section that hurt most yesterday.'],
+ ['17:00','M',45,'Stock book — 15 pages','']]},
+'2026-11-07':{label:'Home',heavy:0,b:[
+ voc('10:00'),
+ ['11:00','B',75,'Training',''],
+ ['13:00','C',60,'Build block','Apply the week’s lessons. Decide Project #1: the vocab tool.'],
+ ['14:30','M',30,'Cheat sheet — add the week’s terms',''],
+ ['20:00','S',15,'Week reset','Score the five tracks 1–5. Plan week 2.']]},
+'2027-03-31':{label:'Release day',heavy:0,b:[
+ voc(),
+ ['10:00','S',60,'Release — sign out','Last day in uniform. Everything collected, nothing left owed.'],
+ ['19:00','B',15,'Shoulder & mobility routine',''],
+ ['20:00','P',30,'Plan the 18-day sprint','Mock dates: 2, 5, 8, 11, 14 April. Set up the room.']]},
+'2027-04-15':{label:'Taper',heavy:0,b:[
+ voc('08:00'),
+ ['09:00','P',90,'Light review — mistakes log only','Nothing new from here.'],
+ ['17:00','B',30,'Easy session — mobility + walk','']]},
+'2027-04-16':{label:'Taper',heavy:0,b:[
+ voc('08:00'),
+ ['09:00','P',45,'One short timed set','Stay sharp, do not get tired.'],
+ ['12:00','S',30,'Exam logistics — ID, confirmation, route','What time you leave, what you bring.'],
+ ['17:00','B',15,'Shoulder & mobility routine','']]},
+'2027-04-17':{label:'Rest',heavy:0,b:[
+ ['10:00','S',30,'Rest day — walk, eat well, sleep early','The work is done. Protect the sleep.']]},
+'2027-04-18':{label:'Exam day',heavy:0,b:[
+ ['08:00','P',180,'Exam day — 18 April','Arrive early. Writing task first.']]}
+};
+
+/* Single blocks added on top of a normal template day. Appended at the end
+   so the template's own blocks keep their positions. */
+var ADD={
+'2026-12-19':[['20:15','P',30,'Decide: April go or no-go, and how to prep','Seven weeks of data in hand. Decide, then write the reason down.']],
+'2027-01-15':[['15:00','P',20,'Register for the 18 April sitting','nite.org.il. ₪495. Registration closes 10 Feb.']],
+'2026-12-05':[['17:45','U',15,'Decide: FL Studio licence','Buy Producer, or drop the track. Cash buffer, never the core.']],
+'2027-03-13':[['17:45','D',30,'Shortlist three tattoo artists','Portfolios that match your style. Healed work, not just fresh.']],
+'2027-03-20':[['17:45','D',30,'Draw the tape cover','Square. It goes on the beat tape.']],
+'2027-03-27':[['17:45','D',20,'Book the tattoo consultation','For a date after 18 April. Ask the price.']]
+};
+
+/* ==========================================================================
+   Secondary tracks — Music (U) and Drawing (D), added 31 Oct.
+   Appended after each day's own blocks (and after ADD), so the primary
+   templates keep their positions. Week 1 is written out by date; then one
+   weekly set per phase. Nothing in the sprint.
+   ========================================================================== */
+var HOBW1={
+'2026-11-02':[['13:00','D',15,'Sketch — freestyle','Any paper until Thursday. Whatever is in front of you.']],
+'2026-11-03':[['21:00','U',15,'FL Studio — first tutorial video','A beginner’s tour. Two lines in your phone after.']],
+'2026-11-04':[['13:00','D',15,'Sketch — freestyle','']],
+'2026-11-05':[['17:45','D',20,'Get a sketchbook and pens','Same trip as the books.'],['19:00','U',60,'Set up FL Studio on the PC','Old licence first, otherwise the free trial. Start the reference playlist.']],
+'2026-11-06':[['15:30','D',45,'Drawing fundamentals','Drawabox Lesson 1 — start with lines.']],
+'2026-11-07':[['16:00','U',90,'FL Studio — beat session','First one: copy a simple tutorial beat, then export it.']]
+};
+var HOB1={
+0:[['21:30','U',15,'FL Studio — tutorial video','This week’s topic. Two lines in your phone: what to try Thursday.']],
+1:[['13:00','D',15,'Sketch — freestyle','Pocket book. No eraser. Date the page.']],
+2:[['21:00','U',15,'FL Studio — tutorial video','Second video, same topic.']],
+3:[['13:00','D',15,'Sketch — freestyle','']],
+4:[['14:00','D',45,'Drawing fundamentals','Drawabox Lesson 1 — lines, ellipses, boxes.'],['19:00','U',60,'FL Studio — practice session','This week’s topic on its own. Small, many, fast.']],
+5:[['15:30','D',15,'Sketch — draw from life','Something real in the room.']],
+6:[['16:00','U',90,'FL Studio — beat session','November: recreate tutorial beats. December: Beat #1. Export something.']]};
+var HOB2={
+0:[['21:30','U',15,'FL Studio — tutorial video','Mixing tools, then the song-mix workflow.']],
+1:[['13:00','D',15,'Sketch — freestyle','']],
+2:[['21:00','U',15,'FL Studio — tutorial video','']],
+3:[['13:00','D',15,'Sketch — freestyle','']],
+4:[['14:00','D',45,'Drawing fundamentals','Forms, light and shadow, hands.'],['19:00','U',60,'FL Studio — practice session','This week’s mixing tool, on an old beat.']],
+5:[['15:30','D',15,'Sketch — tattoo ideas','The ideas page. Quantity first.']],
+6:[['16:00','U',90,'FL Studio — beat session','Beat #2, or Mix #1. Export something.']]};
+var HOB3={
+1:[['13:00','D',15,'Sketch — freestyle','']],
+2:[['20:45','U',15,'FL Studio — producer breakdown','One track from the reference playlist, taken apart.']],
+3:[['13:00','D',20,'Drawing fundamentals — warm-up','Boxes and ellipses. Keep the line sharp.']],
+4:[['14:00','D',45,'Tattoo design block','Feb: ten concepts, shortlist three. Mar: clean linework.'],['19:00','U',60,'FL Studio — practice session','Sound design for the current beat.']],
+6:[['16:00','U',90,'FL Studio — beat session','Beats #3–4, Mix #2. Style notes after each.']]};
+function hobby(k,d){
+  if(k<V2K||k>=SPRINTK)return [];
+  if(HOBW1[k])return HOBW1[k];
+  if(V2DAYS[k])return [];
+  var w=(k>=P3K?HOB3:k>=P2K?HOB2:HOB1)[d.getDay()];
+  return w||[];
+}
+
+/* Phase 1 · Foundations — 1 Nov → 19 Dec */
+var Q1={
+0:{label:'Duty day 1',heavy:1,b:[voc(),['12:30','M',20,'Stock book — 15 pages',''],['19:00','B',15,'Shoulder & mobility routine','Rest day from the gym.'],['20:00','C',75,'Agents course — next lesson','One commit per lesson.']]},
+1:{label:'Duty day 2',heavy:1,b:[voc(),['12:30','P',30,'Psychometric drills','One question type. Log every miss.'],['19:00','B',75,'Training','Shoulder prep first.'],['20:45','C',45,'Agents course — rebuild without looking','Yesterday’s exercise, from a blank file.']]},
+2:{label:'Duty day 3',heavy:1,b:[voc(),['12:30','M',20,'Stock book — 15 pages',''],['19:00','B',15,'Shoulder & mobility routine','Rest day from the gym.'],['19:30','C',75,'Agents course — next lesson','']]},
+3:{label:'Duty day 4',heavy:1,b:[voc(),['12:30','R',20,'English book','Capture every word you could not define exactly.'],['19:00','B',75,'Training',''],['20:45','S',10,'Log the week so far','']]},
+4:{label:'Home',heavy:0,b:[voc('08:30'),['09:30','B',15,'Shoulder & mobility routine',''],['10:00','C',120,'Build block','The week’s lessons applied. November: the vocab tool.'],['17:00','R',30,'Hebrew book — capture words','High register. Look every word up.']]},
+5:{label:'Home',heavy:0,b:[voc('09:30'),['10:30','B',75,'Training','Longest session of the week.'],['13:00','P',60,'Psychometric — format block','One section type: how it works, then a timed set.'],['17:00','M',45,'Fundamental analysis — deep read','The book until 30 Nov, then the three statements.']]},
+6:{label:'Home',heavy:0,b:[voc('10:00'),['10:15','R',15,'Accent — record & compare','Pick one sound for the week.'],['11:00','B',75,'Training',''],['13:00','C',60,'Build block',''],['14:30','M',30,'Cheat sheet — add the week’s terms',''],['20:00','S',15,'Week reset','Score the five tracks 1–5. Plan next week.']]}};
+
+/* Phase 2 · Build — 20 Dec → 30 Jan */
+var Q2={
+0:{label:'Duty day 1',heavy:1,b:[voc(),['12:30','P',30,'Psychometric drills','This week’s question type.'],['19:00','B',15,'Shoulder & mobility routine','Rest day from the gym.'],['20:00','C',75,'Stock project — build block','Decide the one thing you are shipping tonight.']]},
+1:{label:'Duty day 2',heavy:1,b:[voc(),['12:30','M',20,'Finance reading','Statements until 10 Jan, then valuation.'],['19:00','B',75,'Training','Double progression — top of the range, then add weight.'],['20:45','P',45,'Psychometric — concept study','This week’s quant topic and verbal type.']]},
+2:{label:'Duty day 3',heavy:1,b:[voc(),['12:30','P',30,'Psychometric drills','Same type, harder set.'],['19:00','B',15,'Shoulder & mobility routine',''],['19:30','C',75,'Stock project — build block','']]},
+3:{label:'Duty day 4',heavy:1,b:[voc(),['12:30','R',20,'English book',''],['19:00','B',75,'Training',''],['20:45','S',10,'Log the week so far','']]},
+4:{label:'Home',heavy:0,b:[voc('08:30'),['09:30','B',15,'Shoulder & mobility routine',''],['10:00','C',120,'Stock project — build block','The longest build of the week.'],['17:00','R',30,'Hebrew book — capture words','']]},
+5:{label:'Home',heavy:0,b:[voc('09:30'),['10:30','B',75,'Training',''],['13:00','P',90,'Psychometric — timed section','Every second Friday: a writing task instead of one section.'],['17:00','M',45,'Company deep dive','January: deep dive #1, with the stock project.']]},
+6:{label:'Home',heavy:0,b:[voc('10:00'),['10:15','R',15,'Accent — record & compare',''],['11:00','B',75,'Training',''],['13:00','C',60,'AI engineering study','One topic every two weeks. One page in your own words.'],['14:30','M',30,'Portfolio check + decision journal',''],['20:00','S',15,'Week reset','']]}};
+
+/* Phase 3 · Ramp — 31 Jan → 31 Mar */
+var Q3={
+0:{label:'Duty day 1',heavy:1,b:[voc(),['12:30','P',30,'Psychometric drills','Weak types only, from the mistakes log.'],['19:00','B',15,'Shoulder & mobility routine','Rest day from the gym.'],['20:00','P',60,'Psychometric — mistakes review','Re-solve last week’s misses without the answers.']]},
+1:{label:'Duty day 2',heavy:1,b:[voc(),['12:30','P',30,'Psychometric drills',''],['19:00','B',75,'Training',''],['20:45','C',60,'Consulting — conversations & case studies','February: the pilot. March: two case studies.']]},
+2:{label:'Duty day 3',heavy:1,b:[voc(),['12:30','P',30,'Psychometric drills',''],['19:00','B',15,'Shoulder & mobility routine',''],['19:30','P',60,'Psychometric — concept study','The single weakest topic.']]},
+3:{label:'Duty day 4',heavy:1,b:[voc(),['12:30','R',20,'English book',''],['19:00','B',75,'Training',''],['20:45','C',60,'Pilot — build block',''],['22:00','S',10,'Log the week so far','']]},
+4:{label:'Home',heavy:0,b:[voc('08:30'),['09:30','B',15,'Shoulder & mobility routine',''],['10:00','C',120,'Pilot — build block','The smallest thing that is genuinely useful to them.'],['17:00','R',30,'Hebrew book — capture words','']]},
+5:{label:'Home',heavy:0,b:[voc('08:00'),['09:00','P',180,'Psychometric — full mock or timed sections','Odd weeks: full mock with writing. Even weeks: sections + writing.'],['13:00','B',75,'Training',''],['17:00','M',30,'Finance reading','']]},
+6:{label:'Home',heavy:0,b:[voc('10:00'),['10:15','R',15,'Accent — record & compare',''],['11:00','B',75,'Training',''],['13:00','P',60,'Mock review — every wrong answer','In writing. Log the score trend.'],['14:30','M',30,'Portfolio check + decision journal',''],['20:00','S',15,'Week reset','']]}};
+
+/* Phase 4 · Sprint — 1 → 14 April, generated. Mock every third day,
+   training Sun/Tue/Thu. 15–18 April are written out above. */
+var MOCKDAYS={'2027-04-02':1,'2027-04-05':1,'2027-04-08':1,'2027-04-11':1,'2027-04-14':1};
+function sprintDay(d){
+  var mock=!!MOCKDAYS[dkey(d)], gym=[0,2,4].indexOf(d.getDay())>=0;
+  var b=[voc('08:00','Hebrew deck = exam revision now.')];
+  if(mock){
+    b.push(['09:00','P',180,'Full mock — real timing','Writing task included. No pausing.']);
+    b.push(['13:00','P',120,'Mock review — every wrong answer','']);
+  }else{
+    b.push(['09:00','P',150,'Psychometric — weak-area block','Picked from the mistakes log.']);
+    b.push(['13:00','P',120,'Psychometric — timed sections','']);
+  }
+  b.push(['16:00','P',60,'Mistakes log','Re-solve, then write the rule.']);
+  b.push(gym?['17:00','B',60,'Training — maintenance','Hold, do not chase records.']
+            :['17:00','B',15,'Shoulder & mobility routine','A study break, too.']);
+  return {label:mock?'Sprint · mock day':'Sprint · study day',heavy:0,b:b};
+}
+
+/* ==========================================================================
+   Milestones — v2. Ids "n0".."nN" so nothing cleared under v1 transfers.
+   fixed:1 = an external deadline that cannot move.
+   ========================================================================== */
+var MARKS=[
+ ['2027-01-15','P','Registered for the April sitting','Only if you decided go on 19 Dec. ₪495, four weeks before it closes.'],
+ ['2026-11-05','P','Diagnostic sat and scored','The number the whole ramp is built on. Mistakes log open.'],
+ ['2026-11-06','B','Body baseline battery recorded','Eight tests. Physio referral requested.'],
+ ['2026-11-07','R','Vocab deck live · accent baseline recorded',''],
+ ['2026-11-08','C','Agents course in hand · lessons per week set',''],
+ ['2026-11-15','B','Physio assessment booked','Bring the plan. Their version of the exercises wins.'],
+ ['2026-11-15','M','Cross-border tax hour booked','US–Israel. Must happen before 31 Dec.'],
+ ['2026-11-30','M','Stock book finished','Every new term in the cheat sheet.'],
+ ['2026-12-06','C','Project #1 shipped — the vocab tool · lane written','“I help [who] save [what] by building [AI workflow].”'],
+ ['2026-11-30','R','~100 words · accent re-record #1',''],
+ ['2026-12-13','B','Six weeks of prep, no session missed · shoulder pain-free',''],
+ ['2026-12-19','P','April go or no-go · course or self-study decided','Off the diagnostic, seven weeks of prep, and your honest read of army discipline.'],
+ ['2026-12-20','M','Investment Policy Statement written','One page. Play-money cap inside it.'],
+ ['2026-12-19','C','Agents course finished','One commit per lesson. The did-not-understand list empty.'],
+ ['2027-01-10','M','Cheat sheet v2 — statements and ratios',''],
+ ['2027-01-15','M','Allocation set · play sleeve capped and separated','Only after the tax hour.'],
+ ['2027-01-10','C','Stock project v0.1 · the list of 20 people',''],
+ ['2026-12-31','R','~200 words · one book done in each language',''],
+ ['2027-01-31','B','Strength checkpoint vs the November battery',''],
+ ['2027-01-30','P','First full mock — midpoint score','Real conditions, writing task included.'],
+ ['2027-01-31','C','Stock project v0.2 deployed · 5 discovery conversations',''],
+ ['2027-01-31','M','Deep dive #1 · first quarterly review',''],
+ ['2027-01-31','R','~325 words',''],
+ ['2027-02-10','P','Registration closes for the April sitting','Registered on 15 Jan? Confirm the details. Missed it: July is next (closes 13 May).',1],
+ ['2027-02-28','C','Free pilot delivered · v0.3 guardrail live','Unpaid while you serve — it is a case study.'],
+ ['2027-02-28','M','Deep dive #2',''],
+ ['2027-02-28','R','~425 words · two books in each language',''],
+ ['2027-02-28','B','Shoulder re-assessed — overhead work cleared or not',''],
+ ['2027-03-15','B','Test week — full battery vs baseline',''],
+ ['2027-03-15','M','Release money mapped — grant and deposit','Each shekel gets a job: business, buffer, or investing.'],
+ ['2027-03-20','S','Injuries documented · release admin done','If either dislocation happened in service, it is in the file.'],
+ ['2027-03-31','C','Two case studies · portfolio page · LinkedIn live',''],
+ ['2027-03-31','M','Deep dive #3 · contribution plan for consulting income',''],
+ ['2027-03-31','R','~525 words · re-record vs baseline',''],
+ ['2027-03-31','B','Post-release programme written',''],
+ ['2027-03-31','S','Release','',1],
+ ['2027-04-14','P','Last full mock',''],
+ ['2027-04-18','P','Psychometric — 18 April','One ~2.5-hour test. Writing task first.',1],
+ ['2027-04-19','C','Open for paid work','Business file, first price, follow up the five conversations.'],
+ ['2027-06-02','P','Score arrives','Within 45 days of the sitting.',1],
+ ['2026-12-31','M','Cross-border tax hour done','Before any allocation change.'],
+ ['2026-11-05','D','Sketchbooks and pens bought',''],
+ ['2026-11-07','U','FL Studio running on the PC · reference playlist of 10','Old licence, or the free trial.'],
+ ['2026-11-30','U','Four tutorial beats recreated',''],
+ ['2026-11-30','D','Drawabox lines and ellipses · a month of dated sketches',''],
+ ['2026-12-05','U','FL Studio licence decided','Producer Edition, or the track is dropped.'],
+ ['2026-12-31','U','Beat #1 finished and exported',''],
+ ['2026-12-31','D','Drawabox Lesson 1 done · ~25 freestyle pages',''],
+ ['2027-01-30','D','Forms, shading, hands · tattoo ideas page open',''],
+ ['2027-01-31','U','Beat #2 · Mix #1',''],
+ ['2027-02-28','U','Beat #3 · Mix #2 · style notes from three beats',''],
+ ['2027-02-28','D','Ten tattoo concepts · three shortlisted',''],
+ ['2027-03-24','D','Final tattoo designs clean-lined','Clear lines, readable from two metres.'],
+ ['2027-03-31','U','Beat #4 · style sheet · the tape played to three people','Cover drawn by you.'],
+ ['2027-03-31','D','Artist chosen · consultation booked for after 18 April','Page 1 vs the latest, side by side.']
+].map(function(m,i){return {id:'n'+i,date:m[0],tr:m[1],title:m[2],note:m[3],fixed:!!m[4]}});
+
+var SQUAD=[
+ {tr:'B',pos:'GK',name:'Body',ovr:55,pot:75,note:'Consistent, not as strong as wanted. Shoulder out twice.',
+  at:[['Consistency',80],['Strength',50],['Flexibility',40],['Joint resilience',35],['Shoulder stability',30]],
+  line:'First in the collapse order. Strength built on an unstable joint is borrowed — a third dislocation would cost more weeks than anything else in the plan. Stable first, strong on top, and the physio’s version of the exercises wins.'},
+ {tr:'P',pos:'CAM',name:'Psychometric',ovr:null,pot:75,note:'Unrated until Thursday’s diagnostic. Previous target 720.',
+  at:[['Verbal',null],['Quantitative',null],['Writing task',null],['Timing',null],['Stamina',null]],
+  line:'Sunday 18 April, eighteen days after release. The shape is a ramp, not a block: a base built in uniform so the 18 free days before the exam go on mocks and weak spots. Owns the surplus from February.'},
+ {tr:'C',pos:'ST',name:'AI Coding',ovr:30,pot:72,note:'Basic courses done. Roster already shipped. Dad’s course next.',
+  at:[['Shipping',40],['Explaining your own code',40],['Python',35],['Agent workflows',25],['Consulting',5]],
+  line:'The one expected to score after April: an AI consultant with proof. Course, three projects, one pilot, two case studies. Owns the surplus until February, then hands it to the exam.'},
+ {tr:'M',pos:'CM',name:'Money',ovr:45,pot:72,note:'Book at page 100. Cheat sheet built. Portfolio running.',
+  at:[['Terminology',55],['Statement analysis',30],['Tax and vehicles',25],['Valuation',20],['Written strategy',15]],
+  line:'Low volume, all season. The portfolio already exists — the job is to write down why, fence the play money, and pick vehicles that suit a US filer. The stock project is shared with Coding.'},
+ {tr:'R',pos:'CB',name:'Languages',ovr:78,pot:88,note:'Proficient in both. Gains are at the top end.',
+  at:[['English vocabulary',78],['Hebrew vocabulary',72],['Accent',60],['Active use',55],['Reading habit',50]],
+  line:'The cheapest track and the one that pays twice: high-register Hebrew is what the verbal section tests, and English with your own accent is the consulting language. Fifteen minutes daily, never a deep block.'},
+ {tr:'U',pos:'LW',name:'Music',ovr:10,pot:45,note:'Secondary. No real experience. FL Studio needs reinstalling on the PC.',
+  at:[['FL Studio basics',5],['Drums',10],['Melody and chords',10],['Mixing',5],['Own style',5]],
+  line:'A sub who plays home games only: two short videos on base, two sessions on the PC at home. First off the pitch in a bad week. Target by March: four beats, two song mixes, and a style you can describe on one page.'},
+ {tr:'D',pos:'RW',name:'Drawing',ovr:20,pot:50,note:'Secondary. Sketches sometimes. Tattoos from your own designs.',
+  at:[['Freestyle habit',25],['Line confidence',20],['Perspective and form',10],['Shading',10],['Tattoo-ready linework',5]],
+  line:'The only creative track that travels: a pocket sketchbook works on base. Half freestyle, half fundamentals. It ends with your own designs on a tattoo artist’s desk, inked after the exam.'},
+ {tr:'S',pos:'SUB',name:'Admin',ovr:50,pot:65,note:'Registration, referrals, the week reset.',
+  at:[['Calendaring',55],['Logging',45],['Follow-through',40]],
+  line:'Never the point, always the difference. The January registration and the physio referral are admin — and both decide more than any single study session.'}
+];
+
+var ACAD=[
+ {tr:'C',n:'Agent workflows',cur:25,pot:75,st:5,eta:'19 Dec',s:'Dad’s course. One commit per lesson, and every exercise rebuilt from a blank file the next day.'},
+ {tr:'C',n:'Tool use + MCP',cur:10,pot:70,st:4,eta:'February',s:'How a model reaches the real world. The thing most client automations actually are.'},
+ {tr:'C',n:'Evals',cur:5,pot:60,st:3,eta:'March',s:'How you prove it works. The answer to the first hard question a client asks.'},
+ {tr:'C',n:'Discovery conversations',cur:0,pot:60,st:4,eta:'January',s:'Five of them, same four questions. Consulting is mostly listening well.'},
+ {tr:'P',n:'Quant basics',cur:40,pot:75,st:4,eta:'19 Dec',s:'Fractions, ratios, equations, geometry, reading tables. The floor everything else stands on.'},
+ {tr:'P',n:'Writing task',cur:30,pot:70,st:3,eta:'March',s:'30–35 minutes, first thing on the day. Practised every second week from December.'},
+ {tr:'M',n:'Financial statements',cur:30,pot:80,st:5,eta:'10 Jan',s:'The real foundation. Valuation without it is arithmetic on numbers you do not trust.'},
+ {tr:'M',n:'Valuation',cur:20,pot:70,st:4,eta:'February',s:'Damodaran’s free lectures and spreadsheets, applied inside the stock project.'},
+ {tr:'R',n:'English accent',cur:60,pot:85,st:4,eta:'March',s:'One sound a week, shadowing daily, the same passage re-recorded monthly.'},
+ {tr:'R',n:'Hebrew high register',cur:70,pot:88,st:5,eta:'April',s:'Psychometric word lists until the exam. Every card counts twice.'},
+ {tr:'B',n:'Shoulder stability',cur:30,pot:75,st:5,eta:'February',s:'Prep every session, pull twice what you push, no loaded end-range. Re-assessed in February.'},
+ {tr:'U',n:'FL Studio workflow',cur:5,pot:55,st:3,eta:'19 Dec',s:'One topic a week: watched on base, practised Thursday, used Saturday. Something exported every week.'},
+ {tr:'D',n:'Line confidence',cur:20,pot:60,st:4,eta:'31 Dec',s:'Drawabox Lesson 1. Ghosted, committed lines — exactly what tattoo linework needs.'},
+ {tr:'B',n:'Mobility',cur:40,pot:70,st:3,eta:'March',s:'Fifteen minutes on rest days. Deep squat, overhead reach, hips, upper back.'}
+];
+
+var DEALS=[
+ {n:'Cross-border tax hour',st:'Not booked',hot:1,d:'US–Israel. Core vehicles, קרן השתלמות as a consultant, play-sleeve reporting, Roth eligibility.'},
+ {n:'Investment Policy Statement',st:'By 20 Dec',d:'Objective, allocation, rebalancing, contributions, play cap, sell rules, never-dos.'},
+ {n:'Long-term allocation',st:'After the tax hour',d:'Non-US funds are usually PFICs for a US filer. Decide with advice, not by default.'},
+ {n:'Play-money sleeve',st:'Not capped',hot:1,d:'Hard cap, separate tracking, never refilled from the core after a loss.'},
+ {n:'Monthly contribution',st:'Check it runs',d:'The day after salary lands. Later: a fixed % of consulting income.'},
+ {n:'Release money figures',st:'March',d:'Grant is unrestricted. The deposit can fund starting a business.'}
+];
+var SHORTL=[
+ {n:'Finish the stock book',w:'30 Nov',d:'Every new term into the cheat sheet.'},
+ {n:'Cheat sheet v2',w:'10 Jan',d:'The three statements, how they link, the ratios that matter.'},
+ {n:'Deep dive #1',w:'January',d:'One company, written up, using the stock project.'},
+ {n:'Deep dive #2',w:'February',d:'Valuation-led.'},
+ {n:'Deep dive #3',w:'March',d:'Plus capital allocation — how management spends the cash.'},
+ {n:'Contribution plan',w:'March',d:'What share of consulting income gets invested, automatically.'}
+];
+
+var MAIL=[
+ {from:'National Institute for Testing',sub:'April: decide in December, register in January',tr:'P',hot:1,body:[
+  'You are sitting on Sunday 18 April 2027 — one test of about two and a half hours. Pick 18 April when you register; 19 April is the alternative day for the same test. Registration closes on 10 February. The regular fee is ₪495; late registration is ₪745.',
+  'It is the two-domain format: a writing task, then five 20-minute multiple-choice sections — two verbal, two quantitative, one unscored experimental section you cannot identify. English is no longer part of it; that is AMIRNET, separately.',
+  'You do not register on day 1. Sit the diagnostic on 5 November, prep for seven weeks, decide go or no-go on 19 December, and register on 15 January if it is a go. That still leaves almost four weeks before it closes. Scores arrive within 45 days. July is the fallback.']},
+ {from:'Medical',sub:'Physio referral — while it is free',tr:'B',body:[
+  'Two dislocations is recurrent instability. Whether rehab is enough is a doctor’s call, not a training plan’s. Ask the unit doctor for a physiotherapy referral in week 1 — orthopaedics too, if they think so.',
+  'Bring the plan. Let the physio change the exercises; their version wins.',
+  'If either dislocation happened during service, make sure it is in your medical file before release. And the stop rule stands: slipping, sharp pain, or tingling down the arm means stop that exercise and see the doctor.']},
+ {from:'Assistant manager',sub:'The course is stage one, not the goal',tr:'C',body:[
+  'Your dad’s course is the start of the ladder: course, three projects, engineering depth, then a consulting pilot. Count the lessons in week 1 and divide by seven.',
+  'Every lesson leaves a commit. Every second week, twenty minutes showing him what you built — he is your teacher and the first person in your network.',
+  'The rule does not change: if you cannot explain a line, you do not move on. A consultant who says “Claude wrote it” loses the client on the first hard question.']},
+ {from:'Finance',sub:'Tax hour before any allocation change',tr:'M',body:[
+  'Your portfolio already has to handle US rules — PFIC, FBAR — which is why the core is in US-domiciled ETFs. Popular Israeli vehicles do not transfer cleanly to a US filer.',
+  'Book one hour with a cross-border US–Israel advisor before 31 December. Four questions: core vehicles, קרן השתלמות as a self-employed consultant, how play-sleeve trades are reported, and Roth eligibility once consulting pays.',
+  'Meanwhile the play sleeve gets its cap and its rules written into the IPS before it gets another shekel.']},
+ {from:'Languages',sub:'The Hebrew deck is exam prep',tr:'R',body:[
+  'Fifteen Hebrew and ten English words a week. Weight the Hebrew toward psychometric word lists — high register is what the verbal section tests.',
+  'Never trust a guess from context. Look it up: Merriam-Webster or Cambridge for English, אבן-שושן or the Academy for Hebrew. Then use three new words a week in real writing.',
+  'Accent: record the baseline in week 1, shadow five minutes daily, fix one sound a week.']},
+ {from:'The board',sub:'What changed in v2',tr:'S',body:[
+  'Coding has a consulting endpoint now. The psychometric is April, after release. Money keeps learning and adds a written strategy, vehicles and a capped play sleeve. Russian is out; Hebrew and English are in. Body is stability first.',
+  'Plan v2 starts on Sunday 1 November and runs to the exam on 18 April. Days before that keep what they showed at the time, so every tick you made keeps its meaning.',
+  'Week one, like last time, is for honest starting points: a registration, a diagnostic score, a body battery, an accent recording, and a course lesson count.']},
+ {from:'The board',sub:'Two subs signed: Music and Drawing',tr:'U',body:[
+  'Two secondary tracks join from 1 November. Music: FL Studio, four beats and two song mixes by March, and a style of your own. Drawing: a sketching habit, the fundamentals, and tattoo designs of your own.',
+  'They never own the surplus. Music lives on home days (Thursday practice, Saturday beat session) plus two 15-minute videos on base. Drawing is a pocket sketchbook on base and one longer block at home. Both pause for the sprint, and both are the first thing cut in a bad week.',
+  'FL Studio, legally: check whether the laptop copy was a bought licence (your Image-Line account unlocks it on the PC). Otherwise run the free trial, which exports fine but cannot reopen saved projects, and decide on 5 December. Producer Edition is the one for song mixes. Not a cracked copy: that PC holds your broker and bank logins.']}
+];
+
+var ANCHORS=[
+ ['06:15','R','Vocab — Anki + shadowing','Daily, including at home. Never moves.'],
+ ['12:30','P','Psychometric drills','Weekday dead time on base. More days as the phases climb.'],
+ ['19:00','B','Training · shoulder prep first','Mon, Wed, Fri, Sat. Rest days: the 15-minute routine.'],
+ ['20:00','C','Agents course → stock project','Sun and Tue evenings on base.'],
+ ['10:00','C','Build block','Thursday at home. Phase 3: the pilot.'],
+ ['13:00','P','Friday psychometric block','Format → timed section → full mock as the phases climb.'],
+ ['13:00','D','Sketch — freestyle','Mon and Wed on base. Any fifteen dead minutes counts.'],
+ ['16:00','U','FL Studio — beat session','Saturday at home. Thursday 19:00 is the practice session.'],
+ ['20:00','S','Week reset','Saturday. Score the five tracks 1–5, plan the week.']
+];
+
+/* ==========================================================================
+   Task explanations — the ? button on every row
+   Keyed by exact task title, with a prefix fallback in howFor().
+   Every title in V2DAYS, Q1–Q3 and sprintDay() has an entry; the build
+   check fails if one is missing.
+   ========================================================================== */
+var HOW={
+/* ---- week one ---- */
+'Read the new plan':['Plan v2 lives in the project files: Start Here and Timeline are the frame, Parts 1–5 are the tracks.','Ten minutes each on the two frame files tonight. The track files can wait until each one comes up in the week.'],
+'Look at the April test format':['Fifteen minutes on nite.org.il: the two-domain test is a writing task, then five 20-minute sections (two verbal, two quantitative, one unscored).','No registering yet. That decision comes on 19 December, once you have seven weeks of prep behind you.'],
+'Decide: April go or no-go, and how to prep':['Two questions, answered with seven weeks of evidence: is 18 April realistic, and do you prep with a course or on your own?','Go: register on 15 January. No-go: July is the next sitting (registration closes 13 May) and the Phase 2 study blocks shrink.','A course if you are roughly 80+ points from target or doubt your discipline under army conditions. Write the reason down either way.'],
+'Register for the 18 April sitting':['nite.org.il. Pick Sunday 18 April; the 19th is the alternative day for the same test.','₪495 regular fee. It closes 10 February, so this leaves almost four weeks to spare.','Only if 19 December was a go.'],
+'Get the agents course from your dad':['His “Basic Coding with Agents” course is stage one of the coding ladder.','Get access tonight, count the lessons, divide by seven weeks (to 19 December). Write that number down — it is your lessons per week.','If it does not divide cleanly, front-load: more in November, fewer in December.'],
+'Calendar the new anchors':['The daily anchors are in Customise. Put them in your phone’s calendar or reminders once, with alerts.','The app is the map; your phone is the thing that nags you. Both matter.'],
+'Set up the vocab deck — Hebrew + English':['One Anki deck, two sub-decks: Hebrew and English. New cards: about 15 Hebrew and 10 English a week.','Hebrew comes mostly from psychometric word lists until April. English comes from what you read.','Card format: the word on the front; your own definition, your own example sentence, and one synonym on the back.'],
+'Ask the unit doctor for a physio referral':['Two dislocations is recurrent instability — worth a proper assessment, and in the army it costs nothing.','Ask for physiotherapy, and orthopaedics if they think it is warranted. Mention both dislocations and when they happened.','If either happened during service, ask that it is recorded in your medical file.'],
+'Agents course — lesson 1':['The first lesson. Finish it, then commit what you built with a message in your own words.','Anything you could not explain goes on the did-not-understand list.'],
+'Accent baseline — record 3 minutes':['Read a fixed passage aloud for two minutes, then talk freely for one. Save the recording with today’s date.','Keep the passage. Every monthly re-record uses exactly the same text, so the comparison is fair.'],
+'Book the cross-border tax hour':['One paid hour with an advisor who handles both US and Israeli tax. It has to happen before you change any allocation.','Bring four questions: core vehicles for a US filer; קרן השתלמות as a self-employed consultant; how play-sleeve trades get reported on both sides; Roth eligibility once you earn.'],
+'Prep tomorrow':['Fifteen minutes so tomorrow’s diagnostic starts without friction.','Download an official practice test in the two-domain format, prepare paper for the writing task, set the timer, decide where you will sit.'],
+'Psychometric diagnostic — full timed':['A complete practice test in the April format: writing task first, then five 20-minute sections.','Real conditions: phone in another room, no pausing between sections. An interrupted diagnostic tells you nothing.','This is measurement, not performance. It sizes the whole ramp and the course-or-self-study decision.'],
+'Score it and log it':['Mark it the same day, section by section, while you remember your reasoning.','Open the mistakes log: for every wrong answer, the question type, why the wrong answer attracted you, and the rule that would have saved you.','Record the breakdown, not just the total. The total says where you are; the breakdown says what to do.'],
+'Pick the two books — one Hebrew, one English':['One of each, always on the go. Hebrew: high-register writing — serious literature, essays, long opinion pieces. English: business or tech non-fiction, alternating with fiction.','Start both today. A book you have not opened by Sunday will not be read.'],
+'Body baseline tests':['The eight-test battery from Part 5: dead hang, strict pull-ups, controlled push-ups, side plank each side, deep squat hold, wall overhead reach, single-leg balance eyes closed, sit-and-reach.','Warm up with the shoulder prep first. Stop any test that hurts the shoulder.','Write every number down. They come back on 31 December and 15 March.'],
+'Psychometric — format block':['One section type per session: how it works, what it rewards, the common traps — then a short timed set.','Phase 1 is about knowing the test so well that nothing on the day is a surprise.'],
+'Build block':['Apply the week’s lessons to a real thing. In November that thing is Project #1, the vocab capture tool.','Decide the finish line before you start: “the script turns one word into a card row”, not “work on the tool”.','End by writing where you stopped and what is next.'],
+'Cheat sheet — add the week’s terms':['Every new term from the week goes in, in your own words.','Then rewrite one old definition more plainly. If you cannot explain a term without the sheet, it is not yours yet.'],
+'Week reset':['Fifteen minutes. Score each of the five tracks 1–5 with one line on why, then put next week’s deep blocks in the calendar as real events.','First Friday of the month, do the longer scorecard: anything at 2 or below for two months running gets cut or shrunk.'],
+
+/* ---- daily and weekly blocks ---- */
+'Vocab — Anki + shadowing':['Two halves. Ten minutes of Anki reviews and new cards, Hebrew and English. Then five minutes of shadowing: play a sentence from your chosen native speaker, pause, repeat it matching rhythm and melody.','Small on purpose, so it survives bad days. It is never allowed to grow into a deep block.'],
+'Shoulder & mobility routine':['The 15-minute rest-day routine: open-book rotations, 90/90 hip switches, deep squat hold, couch stretch, side-lying external rotation, prone Y-T-W, dead hang if pain-free, single-leg balance.','Slow and controlled. It builds the stability the training days rely on.','Anything that feels like slipping or causes sharp pain: stop, and tell the physio.'],
+'Training':['Your programme, filtered through the five rules: prep first, pull twice what you push, no loaded end-range shoulder positions, control every rep, train the whole system.','Start every session with the 10-minute shoulder prep: band external and internal rotation, pull-aparts, scapular push-ups, wall slides, light face pulls.','Log every set. Progressive overload only exists if it is written down.'],
+'Stock book — 15 pages':['Fifteen pages of the beginner’s book. About 150 left — finished by mid-November at this pace.','Every term you meet goes on a list for Saturday’s cheat-sheet session.'],
+'Agents course — next lesson':['The next lesson, start to finish, then one commit with a message in your own words.','Anything you cannot explain goes on the did-not-understand list, cleared before the next lesson.'],
+'Agents course — rebuild without looking':['Yesterday’s lesson exercise, rebuilt from a blank file without looking at the solution.','Where you get stuck is exactly what you had not learned yet. That is the point of this block.'],
+'Psychometric drills':['Short, focused sets on one question type: 10–15 questions, then every miss into the mistakes log.','Phone-friendly, which is why it lives in weekday dead time.'],
+'English book':['Twenty minutes of your English book. Mark every word you could not define precisely.','Look them up properly afterwards — definition, example, audio pronunciation — and the good ones become cards.'],
+'Log the week so far':['Ten minutes: what actually happened versus what was scheduled. Honest, not flattering.','Transfers and the form guide can only be as good as what you log.'],
+'Hebrew book — capture words':['Thirty minutes of high-register Hebrew. Every word you cannot define exactly gets marked.','Check each one in a proper dictionary for form, register and usage. The best go into the psychometric-weighted Hebrew deck.'],
+'Fundamental analysis — deep read':['The longer weekly finance block. The book until mid-November, then the three statements with a real 10-K open beside you.','Read with a pen. One page of notes beats three chapters skimmed.'],
+'Accent — record & compare':['Record a minute, play it back against your shadowing source, and pick one sound to fix this week — an r, a th, a vowel, a stress pattern.','Drill it with minimal pairs (think/sink, very/wary, ship/sheep). End of month: re-record the baseline passage.'],
+'Stock project — build block':['The flagship, shared with Money. v0.1 in December explains a company in your cheat-sheet terms; v0.2 in January shows what changed quarter to quarter.','Decide the one thing you are shipping in this block before you start.','Same rule as always: no line you cannot explain.'],
+'Finance reading':['The current stage of the money ladder: statements in December, valuation from January, capital allocation in March.','Twenty or thirty minutes, with notes.'],
+'Psychometric — concept study':['This week’s quant topic and verbal question type, taught properly — from a course session, a book, or worked examples.','Concepts first, then drills on the same type during the week.'],
+'Psychometric — timed section':['One full section under real timing, marked and reviewed immediately.','Every second Friday, swap one section for a writing task: 30 minutes, then reread it critically.'],
+'Company deep dive':['One company, analysed: what the statements say, a rough valuation, risks, what would prove you wrong.','From January, use the stock project to pull and summarise. The judgement is yours.'],
+'AI engineering study':['One topic every two weeks: APIs and cost, prompting, tool use and MCP, agent loops, retrieval, evals, security, deployment.','Output: one page in your own words, written for a business owner. That page is consulting material later.'],
+'Portfolio check + decision journal':['Thirty minutes: positions vs the IPS, any drift, and the journal — every trade gets its thesis, what would prove it wrong, and the exit rule.','Once a month, compare the play sleeve against VOO over the same period. Honestly.'],
+'Psychometric — mistakes review':['Re-solve last week’s wrong answers without looking at the solutions.','If you get one wrong again, the rule you wrote for it was not good enough. Rewrite it.'],
+'Consulting — conversations & case studies':['January: discovery conversations, same four questions every time. February: the pilot. March: two case studies — problem, what you built, before and after.','Remember: unpaid while you are in mandatory service.'],
+'Pilot — build block':['The free pilot for a real business: the smallest automation that is genuinely useful to them.','Measure before and after, even roughly — hours saved, errors avoided. The numbers become the case study.'],
+'Psychometric — full mock or timed sections':['Odd weeks: a full mock under real conditions, writing task included. Even weeks: timed sections plus a writing task.','After a full mock, write one line: date, score per domain, and the one thing that cost the most points.'],
+'Mock review — every wrong answer':['Every wrong answer from the mock, reviewed in writing: type, why the wrong answer attracted you, the rule.','This is where the score actually moves. The mock only measures.'],
+
+/* ---- sprint and taper ---- */
+'Full mock — real timing':['A complete test in exam conditions, morning, writing task included, no pausing.','Mock days: 2, 5, 8, 11 and 14 April.'],
+'Psychometric — weak-area block':['Two and a half hours on the weakest areas in the mistakes log, with concept review before drills.','Rotate between a quant weak spot and a verbal one.'],
+'Psychometric — timed sections':['Sections under real timing, marked immediately.','Pace matters as much as accuracy now. Note where time ran out.'],
+'Mistakes log':['An hour with the log: re-solve, then sharpen the rule.','By April this log is a textbook about exactly your mistakes.'],
+'Training — maintenance':['Sixty minutes, full body, moderate loads. Prep first, as always.','The goal during the sprint is to keep what you built and arrive at the exam rested, not to set records.'],
+'Release — sign out':['The last day in uniform. Sign out, return equipment, collect every document.','Check your medical file is complete before you leave.'],
+'Plan the 18-day sprint':['Set up the room, the materials, and the calendar for 1–17 April.','Mock dates: 2, 5, 8, 11, 14 April. Taper 15–17. Exam on 18 April.'],
+'Light review — mistakes log only':['Ninety minutes with the log. No new material from here on.'],
+'Easy session — mobility + walk':['Thirty easy minutes. Move, do not train.'],
+'One short timed set':['A short set to stay sharp. Stop before you are tired.'],
+'Exam logistics — ID, confirmation, route':['ID, the exam confirmation, pens, water, what time you leave, how you get there.','Decide it all today so tomorrow is a rest day.'],
+'Rest day — walk, eat well, sleep early':['Nothing to study. Walk, eat normally, go to sleep early.','Sleep is worth more than any last hour of drilling.'],
+/* ---- music (secondary) ---- */
+'FL Studio — first tutorial video':['Fifteen minutes, headphones on: a beginner’s tour of FL Studio. Image-Line’s own YouTube channel is a good place to start.','Afterwards, two lines in your phone: the first thing you want to try on the PC.'],
+'FL Studio — tutorial video':['One video on this week’s topic. Part 7 has the map: drums, piano roll, bass, samples, arrangement, mixing, then the song-mix workflow.','Phone and headphones on base. Afterwards, two lines in your phone: the one thing to try on Thursday.','Watching is not practising. Fifteen minutes, then stop.'],
+'FL Studio — producer breakdown':['Phase 3 has no new topics. Take one track from your reference playlist apart: tempo, drum sounds, how it is arranged, what makes it sound like that producer.','Write down one thing to borrow for your current beat.'],
+'Set up FL Studio on the PC':['First check whether the laptop copy was a bought licence: log in to your Image-Line account on the PC. If it was, it unlocks for free.','If not, install the free trial from image-line.com. No time limit and full-quality export, but saved projects cannot be reopened until you buy, so in November finish and export in the same session.','Not a cracked copy. Cracked installers are a common way malware gets onto a PC, and this one holds your broker and bank logins.','Then start the reference playlist: ten tracks that sound like what you want to make.'],
+'FL Studio — practice session':['Sixty minutes on this week’s topic on its own: ten drum patterns, eight chord progressions, five basslines. Small, many, fast.','Anything you love goes into your own sound folder. Export the best one.','On the trial, export before you close: the project will not reopen.'],
+'FL Studio — beat session':['Ninety minutes on the current beat. November: recreate tutorial beats. From December: your own.','Finished beats teach more than perfect loops. Finished means arranged (intro, main part, a change, an ending), roughly mixed, exported.','Export something every Saturday. After each finished beat, three lines: what worked, what to keep, what to drop. Those lines become the style sheet in March.'],
+'Decide: FL Studio licence':['Four weeks of trial behind you. Still want this? Then buy now, before the trial’s no-reopen rule makes December’s originals painful.','Producer Edition (about $199) if you are making song mixes: audio clips, recording and stem separation start there. Fruity (about $99) only for beats alone. Rent-to-own is an option. Every edition gets lifetime free updates.','From the cash buffer, never the core. If the answer is no, drop the track and give Saturday back. That is a fine outcome too.'],
+
+/* ---- drawing (secondary) ---- */
+'Sketch — freestyle':['Fifteen minutes in the pocket sketchbook. Draw whatever is in front of you: kit, people, hands, a view.','Pen, no eraser, no judging. Date the page and never tear one out.','13:00 is a default. If lunch is gone, any fifteen dead minutes counts.'],
+'Get a sketchbook and pens':['Same trip as the books. A pocket sketchbook (A5 or A6) for base, an A4 one for home, fineliners 0.3 and 0.5, a pencil and an eraser.','Roughly ₪100–150 in all.'],
+'Drawing fundamentals':['Forty-five minutes of structured practice. November and December: Drawabox Lesson 1 (lines, ellipses, boxes). January: simple forms, light and shadow, hands, with Proko’s free videos for gesture.','Do the exercise exactly as written. The fun drawing happens in the freestyle blocks: that is the 50/50 rule.','Long lines come from the shoulder. If a movement bothers the bad one, draw from the elbow and tell the physio.'],
+'Drawing fundamentals — warm-up':['Twenty minutes of boxes and ellipses so line control does not fade while the tattoo designs take over Thursdays.'],
+'Sketch — draw from life':['Fifteen minutes on one real object in the room. Look at it more than at the page.','Speed over polish. A different object each week.'],
+'Sketch — tattoo ideas':['The ideas page: anything you might wear — symbols, objects, lettering, things from your life. Quantity first, judge later.','Also save tattoos (not drawings) you like into one folder, and note what they share: bold lines, fine lines, black only.'],
+'Tattoo design block':['February: rough out ten concepts, then shortlist three. March: trace the shortlist onto clean paper with a fineliner.','Tattoo-ready means clear lines, nothing too tiny, readable from two metres away, simple shading. The artist will adapt it to the placement, and that is normal.'],
+'Shortlist three tattoo artists':['Three artists whose portfolios match your style: fine-line, blackwork, traditional. They specialise.','Look at healed work, not just fresh photos.'],
+'Draw the tape cover':['One square drawing for the beat tape (Part 7). The two creative tracks meet here.'],
+'Book the tattoo consultation':['Book a consultation for a date after 18 April. Bring the designs and ask the price: it comes from the cash buffer.','A fresh tattoo needs a couple of weeks of care, which is why it waits until the exam is done. If it is near the shoulder, ask how long to ease off training.'],
+
+'Exam day — 18 April':['Arrive early with your ID and confirmation. The writing task comes first, then five 20-minute sections.','One section is experimental and does not count — you cannot tell which, so treat every one as real.']
+};
+function howFor(t){
+  if(HOW[t])return HOW[t];
+  var k=Object.keys(HOW),i;
+  for(i=0;i<k.length;i++){if(t.indexOf(k[i])===0)return HOW[k[i]]}
+  return null;
+}
+
+var FEED=[
+ {who:'AI Coding',day:'The rule',tag:'All 24 weeks',h:'EXPLAIN\nOR STOP',k:'Non-negotiable',
+  cap:'If you cannot explain a line, you do not move on from it. A consultant who says “Claude wrote it” loses the client on the first hard question.',
+  a:'1 commit per lesson',b:'Dad every 2 weeks',go:'academy',c:'C'},
+ {who:'Body',day:'Standing order',tag:'Before every session',h:'STABLE\nTHEN STRONG',k:'10-minute prep',
+  cap:'Two dislocations is recurrent instability. Prep first, pull twice what you push, no loaded end-range positions — and get the physio to check it while it is free.',
+  a:'Mon Wed Fri Sat',b:'Pull 2 : 1 push',go:'squad',c:'B'},
+ {who:'Psychometric',day:'The shape',tag:'A ramp, not a block',h:'18 DAYS\nTHAT MATTER',k:'1 → 17 April',
+  cap:'Release is 31 March, the exam 18 April. Those days are the best prep window in the plan. Everything before them builds the base so they go on mocks, not basics.',
+  a:'~170 h in total',b:'Go or no-go 19 Dec',go:'office',c:'P'},
+ {who:'Languages',day:'Pays twice',tag:'Every morning',h:'EVERY CARD\nIS EXAM PREP',k:'Hebrew → verbal',
+  cap:'High-register Hebrew is what the verbal section tests. English, in your own accent, is the consulting language. Fifteen minutes a day — never more, never skipped.',
+  a:'25 words a week',b:'5 min shadowing',go:'academy',c:'R'},
+ {who:'Money',day:'Before any change',tag:'One page',h:'WRITTEN\nWHILE CALM',k:'Policy statement',
+  cap:'The play sleeve gets a hard cap and its own rules before it gets another shekel. The allocation waits for one hour with a cross-border tax advisor.',
+  a:'IPS by 20 Dec',b:'Tax hour by 31 Dec',go:'office',c:'M'}
+];
+
+var QUICK=[['B','Extra mobility',15],['P','Drills in a queue',20],['M','Read a chapter',25],
+           ['R','Vocab round',10],['C','Read some docs',30],['D','Quick sketch',10],['U','FL Studio video',15],['S','Errand cleared',15]];
+
+var SC_WHERE=[['in','Inside a track I run'],['new','A new track entirely'],['any','Scouts choose']];
+var SC_COST=[['cheap','15 min a day'],['mid','2 h a week'],['deep','A deep block']];
+var SC_AIM=[['job','Toward consulting'],['biz','Toward a business'],['uni','Toward the exam'],['self','Because I want to']];
+var SC_BENCH=[
+ {name:'Build in public, in both languages',tr:'C',pos:'RW',ovr:74,
+  fit:85,cost:20,pay:75,per:'30 min a week',by:'2027-01-31',
+  why:'You are already shipping a lesson a week and three projects. A short weekly post on what you built — alternating Hebrew and English — turns private work into something a future client can see, and it is the Languages track’s “use” loop for free.',
+  first:['Pick one place to post and never revisit it','Post the vocab tool the week it works','Link every post from the portfolio page in March'],
+  risk:'Easy to spend the time polishing instead of building. Ten minutes of writing, then stop.'},
+ {name:'One introduction a month from your dad',tr:'C',pos:'CM',ovr:72,
+  fit:80,cost:15,pay:75,per:'1 message a month',by:'2027-03-31',
+  why:'He teaches AI coding, so the people around him are exactly your future clients and collaborators. Five warm introductions by March beats fifty cold messages after release.',
+  first:['Ask him who he would introduce you to first','Have one specific question ready for each person','Thank him with what came out of it'],
+  risk:'None material, if you show up prepared. An unprepared intro costs him credibility.'},
+ {name:'Log sleep for thirty days',tr:'B',pos:'CB',ovr:66,
+  fit:70,cost:10,pay:65,per:'1 min a day',by:'2026-12-15',
+  why:'Joints recover and strength builds on sleep, and army nights are the variable you never measure. Thirty days of a bedtime and wake time shows whether the problem is the army or your evenings.',
+  first:['Write bed and wake time every morning','Note broken nights separately','Compare against the training log at day 30'],
+  risk:'It can turn into a guilt diary. It is data, not a grade.'},
+ {name:'Read one 10-K cover to cover, alone',tr:'M',pos:'CB',ovr:69,
+  fit:75,cost:40,pay:80,per:'A deep block',by:'2027-01-15',
+  why:'Slow, boring, and the thing almost nobody does. It is also the best test of whether the stock project explains things well — you will know the answer before it does.',
+  first:['Choose a company you already hold an opinion about','Read it without summaries or commentary','Write one page on what surprised you'],
+  risk:'It will feel unproductive for three hours. That is the test, not a sign to stop.'}
+];
+
+/* ==========================================================================
+   LAYER 2 · YOUR STATE — the only thing that persists
+     ticks   {date:{blockId:'done'|'skip'}}
+     times   {date:{blockId:'HH:MM'}}
+     extra   {date:[{tr,title,min,time}]}
+     marks   {markId|mailId:1}
+     signed  [{id,date,tr,title,note}]
+     dumps   [{ts,text,read}]
+     machine 'YYYY-MM-DD'|null   only read for v1 history now
+     apiKey  string
+     lastExport  ms timestamp of the last backup file
+     _t      ms timestamp of the last save — decides which copy is newer
+
+   Saved in two places on every change (see "WHERE YOUR DATA LIVES" at the
+   top): localStorage, written synchronously, and an IndexedDB mirror, plus
+   one start-of-day snapshot per day for the last seven days.
+   ========================================================================== */
+function blankState(){return {ticks:{},marks:{},extra:{},dumps:[],signed:[],times:{},machine:null,apiKey:'',lastExport:0,_t:0}}
+var S=blankState();
+var LS='roster.fc.v1';
+var STORE={ls:false,idb:null,why:'',last:null,fails:0,persist:null,sw:false,restored:''};
+
+function normalize(){
+  S.extra=S.extra||{};S.dumps=S.dumps||[];S.marks=S.marks||{};S.signed=S.signed||[];S.times=S.times||{};S.ticks=S.ticks||{};
+  if(typeof S.lastExport!=='number')S.lastExport=0;
+  if(typeof S._t!=='number')S._t=0;
+}
+function adopt(o){S=Object.assign(blankState(),o);normalize()}
+
+function probeStorage(){
+  try{
+    if(typeof localStorage==='undefined'||!localStorage){STORE.why='This browser exposes no local storage.';return false}
+    var k='roster.probe',v=String(Date.now());
+    localStorage.setItem(k,v);
+    var back=localStorage.getItem(k);
+    localStorage.removeItem(k);
+    if(back!==v){STORE.why='Storage accepted a write but did not return it.';return false}
+    STORE.ls=true;return true;
+  }catch(e){
+    STORE.why=(location.protocol==='file:')
+      ? 'This browser blocks storage for files opened directly from disk.'
+      : ('Storage is unavailable: '+(e&&e.name?e.name:'unknown')+'.');
+    return false;
+  }
+}
+
+/* ---- IndexedDB: a tiny key-value wrapper ---- */
+var DBP=null, DBNAME='roster-db', DBSTORE='kv';
+function db(){
+  if(DBP)return DBP;
+  DBP=new Promise(function(res,rej){
+    if(typeof indexedDB==='undefined'||!indexedDB){rej(new Error('no indexedDB'));return}
+    var r;
+    try{r=indexedDB.open(DBNAME,1)}catch(e){rej(e);return}
+    r.onupgradeneeded=function(){if(!r.result.objectStoreNames.contains(DBSTORE))r.result.createObjectStore(DBSTORE)};
+    r.onsuccess=function(){var d=r.result;d.onversionchange=function(){d.close();DBP=null};res(d)};
+    r.onerror=function(){rej(r.error||new Error('idb open failed'))};
+    r.onblocked=function(){rej(new Error('idb blocked'))};
+  });
+  DBP.catch(function(){DBP=null});
+  return DBP;
+}
+function idbTx(mode,fn){
+  return db().then(function(d){return new Promise(function(res,rej){
+    var tx=d.transaction(DBSTORE,mode),st=tx.objectStore(DBSTORE),out;
+    try{out=fn(st)}catch(e){rej(e);return}
+    tx.oncomplete=function(){res(out&&out.result!==undefined?out.result:undefined)};
+    tx.onerror=function(){rej(tx.error)};
+    tx.onabort=function(){rej(tx.error||new Error('aborted'))};
+  })});
+}
+function idbGet(k){return idbTx('readonly',function(st){return st.get(k)})}
+function idbPut(k,v){return idbTx('readwrite',function(st){return st.put(v,k)})}
+function idbDel(k){return idbTx('readwrite',function(st){return st.delete(k)})}
+function idbKeys(){return idbTx('readonly',function(st){return st.getAllKeys()}).then(function(r){return r||[]})}
+
+var SNAPRE=/^snap:\d{4}-\d{2}-\d{2}$/;
+var mirrorTimer=null, mirrorPending=null;
+function mirrorSoon(json){mirrorPending=json;clearTimeout(mirrorTimer);mirrorTimer=setTimeout(mirrorNow,350)}
+function mirrorNow(){
+  clearTimeout(mirrorTimer);mirrorTimer=null;
+  var json=mirrorPending; if(json==null)return Promise.resolve();
+  mirrorPending=null;
+  return idbPut('state',json).then(function(){
+    STORE.idb=true;STORE.last=new Date();setDot();flagStorage();
+    if(typeof tab!=='undefined'&&tab==='custom')renderStore();
+  }).catch(function(){
+    STORE.idb=false;setDot();flagStorage();
+  });
+}
+function pruneSnaps(){
+  return idbKeys().then(function(ks){
+    var snaps=ks.filter(function(k){return SNAPRE.test(k)}).sort();
+    return Promise.all(snaps.slice(0,Math.max(0,snaps.length-7)).map(idbDel));
+  });
+}
+/* the first time the app opens on a day, keep the state as it was then */
+function ensureDaySnap(){
+  if(!S._t)return Promise.resolve();
+  var k='snap:'+dkey(new Date());
+  return idbGet(k).then(function(x){
+    if(x)return;
+    return idbPut(k,JSON.stringify(S)).then(pruneSnaps);
+  }).catch(function(){});
+}
+
+function save(){
+  S._t=Date.now();
+  var json;
+  try{json=JSON.stringify(S)}catch(e){STORE.fails++;flagStorage();return false}
+  var ok=false;
+  if(STORE.ls){
+    try{localStorage.setItem(LS,json);ok=true;STORE.last=new Date()}
+    catch(e){
+      STORE.ls=false;
+      STORE.why=(e&&e.name==='QuotaExceededError')?'Storage is full, so the last change was not saved here.':'A save was refused by the browser.';
+      STORE.fails++;
+    }
+  }
+  mirrorSoon(json);
+  setDot();flagStorage();
+  return ok;
+}
+function storeBad(){return !STORE.ls&&STORE.idb===false}
+function setDot(){
+  var m=$('mark'); if(!m)return;
+  m.dataset.s=storeBad()?'err':(STORE.ls||STORE.idb===true)?'ok':'';
+  m.title=storeBad()?'Not saving':'Saved';
+}
+function flagStorage(){
+  var el=$('storeWarn'); if(!el)return;
+  el.innerHTML=storeBad()?
+    '<div class="warnbar">'+svg('flag')+
+    '<span><b>Nothing is being saved.</b> '+esc(STORE.why)+
+    ' Ticks will vanish when you close this. Open Customise for what to do about it.</span></div>':'';
+}
+function requestPersist(){
+  try{
+    if(!(navigator.storage&&navigator.storage.persisted))return;
+    navigator.storage.persisted().then(function(p){
+      if(p){STORE.persist=true;return}
+      if(navigator.storage.persist)return navigator.storage.persist().then(function(g){STORE.persist=!!g});
+    }).then(function(){if(tab==='custom')renderStore()}).catch(function(){});
+  }catch(e){}
+}
+/* on start-up the newer of the two copies wins */
+function recover(){
+  return idbGet('state').then(function(js){
+    STORE.idb=true;
+    var o=null; try{o=js?JSON.parse(js):null}catch(e){}
+    var mine=S._t||0, theirs=(o&&o._t)||0;
+    if(o&&theirs>mine){
+      adopt(o);
+      if(STORE.ls){try{localStorage.setItem(LS,JSON.stringify(S))}catch(e){}}
+      STORE.restored='Restored from the mirror copy kept inside the app.';
+      render();
+      toast('Your data was restored','From the app’s mirror copy','#4D8BFF',null);
+    }else if(mine>0&&mine>theirs){
+      mirrorSoon(JSON.stringify(S));
+    }
+    setDot();flagStorage();
+    return ensureDaySnap();
+  }).catch(function(){STORE.idb=false;setDot();flagStorage()});
+}
+window.addEventListener('pagehide',function(){if(mirrorPending!=null)mirrorNow()});
+document.addEventListener('visibilitychange',function(){if(document.hidden&&mirrorPending!=null)mirrorNow()});
+/* another window of the same app changed the data */
+window.addEventListener('storage',function(e){
+  if(e.key!==LS||!e.newValue)return;
+  try{var o=JSON.parse(e.newValue); if((o._t||0)>(S._t||0)){adopt(o);render()}}catch(x){}
+});
+
+probeStorage();
+try{var raw=STORE.ls?localStorage.getItem(LS):null; if(raw)S=Object.assign(S,JSON.parse(raw))}catch(e){}
+normalize();
+
+var today=new Date();
+function $(id){return document.getElementById(id)}
+function dkey(d){var z=new Date(d);z.setMinutes(z.getMinutes()-z.getTimezoneOffset());return z.toISOString().slice(0,10)}
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function days(a,b){return Math.max(0,Math.ceil((b-a)/864e5))}
+function hhmm(){var d=new Date();return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)}
+
+var okDate=function(s){return typeof s==='string'&&/^\d{4}-\d{2}-\d{2}$/.test(s)&&!isNaN(new Date(s+'T00:00:00'))};
+var okTime=function(s){return typeof s==='string'&&/^([01]\d|2[0-3]):[0-5]\d$/.test(s)};
+var okId=function(s){return typeof s==='string'&&/^[a-z]\d{1,3}$/.test(s)};
+var okState=function(s){return s==='done'||s==='skip'};
+var TRACK_KEYS={C:1,P:1,M:1,R:1,B:1,U:1,D:1,S:1};
+var okTrack=function(s){return Object.prototype.hasOwnProperty.call(TRACK_KEYS,s)};
+function clean(s,max){return String(s==null?'':s).replace(/[<>]/g,'').slice(0,max||120)}
+function okMin(v){v=parseInt(v,10);return isNaN(v)?15:Math.min(600,Math.max(1,v))}
+var TODAY=dkey(today);
+var wk=0, tab='home', mailSel=0, sqSel=0, howOpen={}, sel=null;
+
+/* ============================================================================
+   LAYER 3 · THE JOIN
+   tpl(d)     which template applies: v1 history, a v2 dated day, a phase
+              template, or the sprint generator
+   blocks(d)  that template + your added blocks + your moved times, sorted
+   ============================================================================ */
+function hasMachine(d){return S.machine && dkey(d)>=S.machine}
+function tpl(d){
+  var k=dkey(d);
+  if(k<PREK){                                  /* v1 history, untouched */
+    if(W1[k])return W1[k];
+    if(d<START)return EMPTY;
+    return (hasMachine(d)?PA:P0)[d.getDay()];
+  }
+  if(k<V2K)return PRESEASON;                   /* 18–31 Oct: nothing until plan v2 starts */
+  if(V2DAYS[k])return withHobby(V2DAYS[k],k,d);
+  if(k>=ENDK)return AFTER;
+  var base=k>=SPRINTK?sprintDay(d):k>=P3K?Q3[d.getDay()]:k>=P2K?Q2[d.getDay()]:Q1[d.getDay()];
+  return withHobby(ADD[k]?{label:base.label,heavy:base.heavy,b:base.b.concat(ADD[k])}:base,k,d);
+}
+/* secondary tracks go after everything else, so primary positions never move */
+function withHobby(t,k,d){
+  var h=hobby(k,d);
+  return h.length?{label:t.label,heavy:t.heavy,b:t.b.concat(h)}:t;
+}
+function blocks(d){
+  var k=dkey(d), ov=S.times[k]||{};
+  var t=tpl(d).b.map(function(x,i){return {id:'t'+i,time:x[0],tr:x[1],min:x[2],title:x[3],note:x[4],was:x[0]}});
+  var ex=(S.extra[k]||[]).map(function(x,i){
+    var tm=okTime(x.time)?x.time:'22:45';
+    return {id:'x'+i,time:tm,was:tm,tr:okTrack(x.tr)?x.tr:'S',min:okMin(x.min),
+            title:clean(x.title,90),note:'added by you'};
+  });
+  return t.concat(ex).map(function(b){
+    if(ov[b.id]&&okTime(ov[b.id])){b.moved=b.time!==ov[b.id];b.time=ov[b.id]}
+    if(!okTime(b.time))b.time='23:59';
+    return b;
+  }).sort(function(a,b){return a.time.localeCompare(b.time)});
+}
+var asking=false;
+async function ask(prompt){
+  var key=(S.apiKey||'').trim();
+  if(!key)throw new Error('NOKEY');
+  if(asking)throw new Error('BUSY');
+  asking=true;
+  var ctl=typeof AbortController!=='undefined'?new AbortController():null;
+  var timer=setTimeout(function(){if(ctl)ctl.abort()},45000);
+  try{
+    var r=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',signal:ctl?ctl.signal:undefined,
+      headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1200,messages:[{role:'user',content:prompt}]})});
+    if(!r.ok)throw new Error('API '+r.status);
+    var data=await r.json();
+    var text=(data.content||[]).map(function(i){return i.text||''}).join('\n');
+    return JSON.parse(text.replace(/```json|```/g,'').trim());
+  }finally{clearTimeout(timer);asking=false}
+}
+function stOf(d,id){return (S.ticks[dkey(d)]||{})[id]}
+function setSt(d,id,v){var k=dkey(d);S.ticks[k]=S.ticks[k]||{};if(v)S.ticks[k][id]=v;else delete S.ticks[k][id];save();render()}
+function phaseIdx(d){
+  var k=dkey(d);
+  if(k<V2K)return -1;
+  if(k<P2K)return 0; if(k<P3K)return 1; if(k<SPRINTK)return 2; if(k<ENDK)return 3;
+  return 4;
+}
+function phaseName(d){
+  var k=dkey(d);
+  if(k<V2K&&k>=PREK)return 'Pre-season · v2 starts 1 Nov';
+  if(k<V2K){
+    if(W1[k])return 'v1 · week 01';
+    if(d<START)return 'Pre-season';
+    return hasMachine(d)?'v1 · phase A':'v1 · phase 0';
+  }
+  if(k<='2026-11-07')return 'Week 01 · v2 baseline';
+  var i=phaseIdx(d);
+  if(i>=0&&i<4)return PHASES[i][0]+' · '+PHASES[i][1].toLowerCase();
+  return 'After the exam';
+}
+function allMarks(){
+  return MARKS.concat(S.signed||[]).sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:0});
+}
+function nextMark(){
+  var A=allMarks();
+  for(var i=0;i<A.length;i++){if(A[i].date>=TODAY && !S.marks[A[i].id])return A[i]}
+  return A[A.length-1];
+}
+function planLine(){
+  return 'He is Ben, an Israeli soldier released 31 March 2027, with the psychometric exam on 18 April 2027. Plan v2 runs 1 November 2026 to 18 April 2027. Five tracks: '+
+    'AI Coding (his dad’s "Basic Coding with Agents" course, hands-on projects including a stock research assistant built with Claude, aiming to become an AI consultant), '+
+    'Psychometric (two-domain format, a ramp ending in an 18-day full-time sprint after release), '+
+    'Money (fundamental analysis, a written long-term strategy, long-term vehicles suited to a US tax filer, a capped play-money sleeve), '+
+    'Languages (advanced Hebrew and English vocabulary through books and lookups, regaining his natural English accent), '+
+    'Body (shoulder dislocated twice: stability first, joint resilience, then strength, flexibility, physique), plus Admin, and two secondary tracks: Music (learning FL Studio at home on weekends: beats, song mixes, a personal style) and Drawing (a sketching habit, fundamentals, his own tattoo designs). The secondary tracks are cut first. Current phase: '+phaseName(today)+'.';
+}
+
+/* ==========================================================================
+   LAYER 4 · SCREENS
+   ========================================================================== */
+var TABS=[['home','Home','home'],['central','Central','grid'],['notif','Notifications','mail'],['squad','Squad','users'],
+          ['transfers','Transfers','swap'],['academy','Academy','star'],['scout','Scouting','eye'],['office','Office','case'],['custom','Customise','cog']];
+$('nav').innerHTML=TABS.map(function(t,i){return (i===1?'<span class="sep"></span>':'')+
+  '<button data-tab="'+t[0]+'">'+svg(t[2])+t[1]+'</button>'}).join('');
+
+var LEGEND={
+ home:[['A','Advance'],['B','Not today'],['?','What a task is'],['X','Objectives']],
+ central:[['A','Tick a block'],['B','Change week'],['Y','Marks'],['X','Back to today']],
+ notif:[['A','Send it'],['B','Just save'],['Y','Open message'],['X','Mark read']],
+ squad:[['A','Inspect'],['B','Back'],['Y','Attributes'],['X','Collapse order']],
+ transfers:[['A','Open the window'],['B','Back'],['Y','Last 7 days'],['X','Collapse rule']],
+ academy:[['A','Scout report'],['B','Back'],['Y','Potential'],['X','Ready by']],
+ scout:[['A','Send the scouts'],['B','Back'],['Y','Change the brief'],['X','Sign']],
+ office:[['A','Clear objective'],['B','Back'],['Y','Contract'],['X','Board review']],
+ custom:[['A','Phases'],['B','Back'],['Y','Export'],['X','Import']]};
+
+function legendHTML(){
+  var i=phaseIdx(today);
+  return LEGEND[tab].map(function(l){return '<span class="lg"><i>'+l[0]+'</i>'+l[1]+'</span>'}).join('')+
+   '<span class="lg rt"><i>'+(i<0?'0':i<4?(i+1):'✓')+'</i>'+phaseName(today)+'</span>';
+}
+function setTab(t){
+  tab=t;
+  Array.prototype.forEach.call(document.querySelectorAll('#nav button'),function(b){b.classList.toggle('on',b.dataset.tab===t)});
+  TABS.forEach(function(x){$('t-'+x[0]).hidden=x[0]!==t});
+  var sec=$('t-'+t);sec.style.animation='none';void sec.offsetWidth;sec.style.animation='';
+  $('legend').innerHTML=legendHTML();
+  if(t==='custom'){renderStore();renderInstall()}
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+$('nav').onclick=function(e){var b=e.target.closest('[data-tab]'); if(b)setTab(b.dataset.tab)};
+
+/* ==========================================================================
+   HOME
+   ========================================================================== */
+function selBlock(){
+  var live=blocks(today).filter(function(b){return stOf(today,b.id)!=='skip'});
+  var open=live.filter(function(b){return !stOf(today,b.id)});
+  var cur=live.filter(function(b){return b.id===sel})[0];
+  if(!cur)cur=open[0];
+  return cur||null;
+}
+function renderHome(){
+  var all=blocks(today);
+  var live=all.filter(function(b){return stOf(today,b.id)!=='skip'});
+  var aside=all.filter(function(b){return stOf(today,b.id)==='skip'});
+  var nm=nextMark(), nd=days(today,new Date(nm.date+'T00:00:00'));
+  $('hDate').textContent=today.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'long'}).toUpperCase();
+  $('hNext').textContent=(nd===0?'Mark due today · ':'Next mark in '+nd+' day'+(nd===1?'':'s')+' · ')+nm.title;
+
+  var n=selBlock(); if(n)sel=n.id;
+  var nDone=n&&stOf(today,n.id)==='done';
+  if(n){
+    $('hIcon').innerHTML=svg(nDone?'check':TICON[n.tr]);
+    $('hIcon').style.color=nDone?'#C8FF3F':COL[n.tr];
+    $('hTitle').textContent=n.title;
+    $('hTag').textContent=(nDone?'Done · tap it again to undo':(n.note||TR[n.tr]))+' · '+n.time+' · '+n.min+' min';
+  }else{
+    $('hIcon').innerHTML=svg('check'); $('hIcon').style.color='#C8FF3F';
+    $('hTitle').textContent=all.length?'Day’s closed':'Nothing scheduled';
+    $('hTag').textContent=all.length
+      ?(all.length-aside.length)+' blocks handled'+(aside.length?', '+aside.length+' set aside':'')+'. Adding more now is how tomorrow gets ruined.'
+      :phaseName(today)+'.';
+  }
+  $('hAdvance').style.display=n?'':'none';
+  $('hSkip').style.display=(n&&!nDone)?'':'none';
+  $('hAdvance').className='pill'+(nDone?'':' key');
+  $('hAdvance').textContent=nDone?'Undo':'Advance';
+
+  var nowStr=hhmm(), placed=false, listHTML='';
+  live.forEach(function(b){
+    var s=stOf(today,b.id), on=n&&b.id===n.id, hk='h|'+b.id, isDone=s==='done';
+    if(!placed&&b.time>nowStr){
+      listHTML+='<div class="nowline"><i></i><b>Now '+nowStr+'</b><span class="ln"></span></div>';placed=true;
+    }
+    listHTML+='<div>'+
+      '<div class="slot" style="--act:'+(isDone?'#4D8BFF':'#C8FF3F')+'">'+
+        '<div class="behind"><span class="l">'+svg(isDone?'undo':'check')+(isDone?'Undo':'Clear')+'</span>'+
+        '<span class="r">'+svg('flag')+'Not today</span></div>'+
+        '<div class="act'+(on?' on':'')+(isDone?' done':'')+(!s&&b.time<nowStr?' late':'')+'" '+
+        'data-pick="'+b.id+'" role="button" tabindex="0" aria-pressed="'+(on?'true':'false')+'">'+
+        '<span class="box">'+svg(isDone?'check':TICON[b.tr])+'</span>'+
+        '<span class="lb">'+esc(b.title)+(b.note?'<em>'+esc(b.note)+'</em>':'')+'</span>'+
+        '<button class="rt tbtn'+(b.moved?' moved':'')+'" data-time="'+b.id+'" aria-label="Change the time">'+b.time+'</button>'+
+        '<button class="qm'+(howOpen[hk]?' on':'')+'" data-how="'+hk+'" aria-label="What is this task">?</button>'+
+        '</div></div>'+howHTML(b.title,b.tr,hk)+'</div>';
+  });
+  if(!placed)listHTML+='<div class="nowline"><i></i><b>Now '+nowStr+'</b><span class="ln"></span></div>';
+  $('hActs').innerHTML=listHTML;
+  renderQA(); bindSwipe();
+
+  $('hAside').innerHTML=aside.length
+    ? '<div class="sechead"><div class="eyebrow">Set aside today</div><div class="rule"></div>'+
+      '<div class="eyebrow">'+aside.length+' kept as missed</div></div>'+
+      '<div class="panel"><div class="rows">'+aside.map(function(b){
+        return '<div class="r" style="--tc:'+COL[b.tr]+'"><span class="flag"></span>'+
+          '<span class="num" style="width:38px">'+b.time+'</span>'+
+          '<span class="grow"><b style="color:#5D6B7A">'+esc(b.title)+'</b><em>Counts as missed. Still in the week and in your results.</em></span>'+
+          '<button class="pill" style="padding:6px 13px;font-size:11px" data-restore="'+b.id+'">Put back</button></div>';
+      }).join('')+'</div></div>'
+    : '';
+
+  var doneN=all.filter(function(b){return stOf(today,b.id)==='done'}).length;
+  $('hCount').textContent=doneN+' of '+all.length+' cleared'+(aside.length?' · '+aside.length+' set aside':'');
+  renderForm();
+  $('meSub').textContent=phaseName(today);
+  $('pips').innerHTML=all.map(function(b){
+    var s=stOf(today,b.id);
+    return '<i style="background:'+(s==='done'?COL[b.tr]:s==='skip'?'rgba(255,77,109,.45)':'rgba(255,255,255,.16)')+'"></i>'}).join('');
+}
+
+/* ---- this week's focus card ---- */
+function weekFocus(){
+  var base=new Date(today);base.setHours(0,0,0,0);base.setDate(base.getDate()-base.getDay());
+  var end=new Date(base);end.setDate(end.getDate()+6);
+  var f=function(d){return d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})};
+  var AM=allMarks();
+  var inWk=AM.filter(function(m){return m.date>=dkey(base)&&m.date<=dkey(end)&&!S.marks[m.id]});
+  var soonFixed=AM.filter(function(m){return m.fixed&&m.date>=TODAY&&!S.marks[m.id]})[0];
+  var dFixed=soonFixed?days(today,new Date(soonFixed.date+'T00:00:00')):999;
+  var mins={},i,d;
+  for(i=0;i<7;i++){d=new Date(base);d.setDate(d.getDate()+i);
+    blocks(d).forEach(function(b){mins[b.tr]=(mins[b.tr]||0)+b.min})}
+  var heaviest=Object.keys(mins).sort(function(a,b){return mins[b]-mins[a]})[0]||'C';
+  var head,cap,k,tr,aa,bb,go;
+
+  if(dFixed<=21){
+    tr=soonFixed.tr; go='office'; k='Fixed · cannot move';
+    head='D-'+dFixed+'\n'+(soonFixed.title.length>22?soonFixed.title.slice(0,20).toUpperCase()+'…':soonFixed.title.toUpperCase());
+    cap=(soonFixed.note?soonFixed.note+' ':'')+'This one is external. Everything flexible bends around it, not the other way round.';
+    aa=new Date(soonFixed.date+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'long'});
+    bb=TR[soonFixed.tr];
+  }else if(inWk.length){
+    var m0=inWk[0]; tr=m0.tr; go='central'; k=f(base)+' – '+f(end);
+    head=(inWk.length>1?inWk.length+' MARKS\nDUE':'ONE MARK\nDUE');
+    cap=inWk.map(function(x){return x.title}).join(' · ')+'.';
+    aa=inWk.length+' this week'; bb=TR[m0.tr];
+  }else{
+    tr=heaviest; go='central'; k=f(base)+' – '+f(end);
+    head=(TR[heaviest]||'Admin').toUpperCase()+'\nOWNS THE WEEK';
+    cap='No marks fall due. '+Math.round((mins[heaviest]||0)/60*10)/10+' of this week’s hours sit on '+(TR[heaviest]||'admin').toLowerCase()+
+        ', which is the plan working as designed — the surplus goes to whichever track owns this phase.';
+    aa=Math.round((mins[heaviest]||0)/60*10)/10+' h scheduled'; bb=phaseName(today);
+  }
+  return {who:'This week',day:f(base)+' – '+f(end),tag:'Focus',h:head,k:k,cap:cap,a:aa,b:bb,go:go,c:tr,focus:1};
+}
+
+function cardHTML(f,cl){
+  return '<article class="card"'+(cl?' aria-hidden="true"':'')+'>'+
+    '<div class="cardtop"><div class="crest" style="background:linear-gradient(150deg,'+COL[f.c]+'66,#101A28)">'+
+      (f.focus?svg('target','ico'):esc(f.who.charAt(0)))+'</div>'+
+    '<div><b>'+esc(f.who)+'<span class="vf"><svg viewBox="0 0 24 24">'+I.check+'</svg></span></b>'+
+    '<span class="dy">'+esc(f.day)+' · '+esc(f.tag)+'</span></div>'+
+    (f.focus?'<span class="new">Now</span>':'')+'</div>'+
+    '<div class="shot" style="background:linear-gradient(140deg,'+COL[f.c]+'2E,#12203A 48%,#0B1320)">'+
+      '<h3>'+esc(f.h).replace(/\n/g,'<br>')+'</h3><p>'+esc(f.k)+'</p></div>'+
+    '<div class="cap">'+esc(f.cap)+'</div>'+
+    '<div class="stats">'+svg('clock')+'<span>'+esc(f.a)+'</span><span>'+esc(f.b)+'</span>'+
+      '<button class="go" data-goto="'+f.go+'">Open '+f.go+' '+svg('arrow')+'</button></div></article>';
+}
+var feedSig='', feedN=0, fpos=1, fdrag=null;
+function ftrack(){return $('ftrack')}
+function renderFeed(){
+  var cards=[weekFocus()].concat(FEED);
+  var sig=cards.map(function(c){return c.h+c.cap}).join('|');
+  if(sig===feedSig)return;
+  feedSig=sig; feedN=cards.length;
+  ftrack().innerHTML=cardHTML(cards[feedN-1],1)+cards.map(function(c){return cardHTML(c)}).join('')+cardHTML(cards[0],1);
+  $('dots').innerHTML=cards.map(function(x,i){return '<i data-dot="'+i+'"></i>'}).join('');
+  fpos=1; place(false); paintDots();
+}
+function place(anim,extra){
+  var t=ftrack();
+  t.style.transition=anim?'transform .34s cubic-bezier(.22,.61,.36,1)':'none';
+  t.style.transform='translate3d(calc('+(-fpos*100)+'% + '+(extra||0)+'px),0,0)';
+  if(!anim){t.offsetHeight}
+}
+function realIdx(){return (fpos-1+feedN)%feedN}
+function paintDots(){
+  var ds=$('dots').children,r=realIdx(),j;
+  for(j=0;j<ds.length;j++)ds[j].className=(j===r?'on':'');
+}
+function goTo(i,anim){fpos=i;place(anim!==false);paintDots()}
+function step(d){goTo(fpos+d)}
+ftrack().addEventListener('transitionend',function(e){
+  if(e.propertyName!=='transform')return;
+  if(fpos===0){fpos=feedN;place(false)}
+  else if(fpos===feedN+1){fpos=1;place(false)}
+});
+$('feed').addEventListener('pointerdown',function(e){
+  if(e.target.closest('[data-goto]'))return;
+  fdrag={x:e.clientX,y:e.clientY,dx:0,lock:null,w:$('feed').clientWidth||1};
+  ftrack().style.transition='none';
+});
+$('feed').addEventListener('pointermove',function(e){
+  if(!fdrag)return;
+  var dx=e.clientX-fdrag.x, dy=e.clientY-fdrag.y;
+  if(fdrag.lock===null){
+    if(Math.abs(dx)<6&&Math.abs(dy)<6)return;
+    fdrag.lock=Math.abs(dx)>Math.abs(dy)?'x':'y';
+  }
+  if(fdrag.lock!=='x')return;
+  e.preventDefault();
+  fdrag.dx=dx; place(false,dx);
+},{passive:false});
+function endDrag(){
+  if(!fdrag)return;
+  var dx=fdrag.dx, w=fdrag.w; fdrag=null;
+  if(Math.abs(dx)>Math.min(70,w*0.18))step(dx<0?1:-1);
+  else place(true);
+}
+$('feed').addEventListener('pointerup',endDrag);
+$('feed').addEventListener('pointercancel',endDrag);
+$('feed').addEventListener('pointerleave',endDrag);
+$('feed').addEventListener('click',function(e){var g=e.target.closest('[data-goto]'); if(g)setTab(g.dataset.goto)});
+$('dots').onclick=function(e){
+  var d=e.target.closest('[data-dot]'); if(!d)return;
+  goTo(+d.dataset.dot+1);
+};
+
+/* ---- undo toast ---- */
+var undoFn=null,toastT=null;
+function toast(label,sub,tone,fn){
+  undoFn=fn;
+  var t=$('toast');
+  t.style.setProperty('--tc',tone);
+  t.innerHTML='<i class="fl"></i><span class="g"><b>'+esc(label)+'</b><em>'+esc(sub)+'</em></span>'+
+    (fn?'<button id="tUndo">Undo</button>':'')+'<span class="bar"></span>';
+  t.classList.add('on');
+  if(fn)$('tUndo').onclick=function(){var f=undoFn;hideToast();if(f)f()};
+  clearTimeout(toastT);toastT=setTimeout(hideToast,6000);
+}
+function hideToast(){$('toast').classList.remove('on');undoFn=null}
+
+/* ---- swipe: right clears or undoes, left sets aside ---- */
+var drag=null;
+function bindSwipe(){
+  Array.prototype.forEach.call(document.querySelectorAll('#hActs [data-pick]'),function(row){
+    row.addEventListener('pointerdown',function(e){
+      if(e.target.closest('[data-how]')||e.target.closest('[data-time]'))return;
+      drag={id:row.dataset.pick,x:e.clientX,y:e.clientY,dx:0,lock:null,row:row,slot:row.parentNode};
+      row.style.transition='none';
+      row.setPointerCapture&&row.setPointerCapture(e.pointerId);
+    });
+    row.addEventListener('pointermove',function(e){
+      if(!drag||drag.id!==row.dataset.pick)return;
+      var dx=e.clientX-drag.x, dy=e.clientY-drag.y;
+      if(drag.lock===null){
+        if(Math.abs(dx)<7&&Math.abs(dy)<7)return;
+        drag.lock=Math.abs(dx)>Math.abs(dy)?'x':'y';
+      }
+      if(drag.lock!=='x')return;
+      e.preventDefault();
+      drag.dx=dx;
+      row.style.transform='translateX('+dx+'px)';
+      drag.slot.className='slot'+(dx>18?' pull-r':dx<-18?' pull-l':'');
+    });
+    ['pointerup','pointercancel','pointerleave'].forEach(function(ev){
+      row.addEventListener(ev,function(){
+        if(!drag||drag.id!==row.dataset.pick)return;
+        var dx=drag.dx,id=drag.id,r=drag.row,sl=drag.slot; drag=null;
+        r.style.transition='transform .2s ease';
+        var was=stOf(today,id), b=blocks(today).filter(function(x){return x.id===id})[0];
+        if(Math.abs(dx)>78&&b){
+          r.style.transform='translateX('+(dx>0?440:-440)+'px)';
+          setTimeout(function(){
+            sel=null;
+            if(dx>0){
+              if(was==='done'){setSt(today,id,null);toast(b.title,'Back on the list','#4D8BFF',function(){setSt(today,id,'done')})}
+              else{setSt(today,id,'done');toast(b.title,'Cleared','#C8FF3F',function(){setSt(today,id,was||null)})}
+            }else{
+              setSt(today,id,'skip');
+              toast(b.title,'Set aside · still counts as missed','#FF4D6D',function(){setSt(today,id,was||null)});
+            }
+          },140);
+        }else{
+          r.style.transform='translateX(0)';
+          sl.className='slot';
+          if(Math.abs(dx)<7){
+            if(id===sel&&was==='done'){setSt(today,id,null);toast(b.title,'Back on the list','#4D8BFF',function(){setSt(today,id,'done')})}
+            else{sel=id;renderHome()}
+          }
+        }
+      });
+    });
+  });
+}
+
+/* ---- move a block to a different time ---- */
+var tH=0,tM=0;
+function openTime(id){
+  var b=blocks(today).filter(function(x){return x.id===id})[0]; if(!b)return;
+  tH=parseInt(b.time.slice(0,2),10); tM=parseInt(b.time.slice(3),10);
+  tM=[0,15,30,45].indexOf(tM)<0?Math.round(tM/15)%4*15:tM;
+  $('modal').innerHTML='<div class="sheet">'+
+    '<div class="from" style="color:#9BC2FF">Move this block</div>'+
+    '<h3>'+esc(b.title)+'</h3>'+
+    '<div class="tprev" id="tPrev"></div>'+
+    '<div class="lbl">Hour</div><div class="hrs" id="tHrs"></div>'+
+    '<div class="lbl">Minutes</div><div class="mins" id="tMins"></div>'+
+    '<p class="note" style="margin-top:14px">Only for today. The plan keeps its own time tomorrow.</p>'+
+    '<div class="pillrow" style="margin:16px 0 0"><button class="pill key" id="tSet">Set time</button>'+
+    (b.moved?'<button class="pill" id="tReset">Reset</button>':'')+
+    '<button class="pill" data-no>Cancel</button></div></div>';
+  $('modal').classList.add('open');
+  paintTime(b);
+  $('tHrs').onclick=function(e){var x=e.target.closest('[data-h]');if(!x)return;tH=+x.dataset.h;paintTime(b)};
+  $('tMins').onclick=function(e){var x=e.target.closest('[data-m]');if(!x)return;tM=+x.dataset.m;paintTime(b)};
+  $('tSet').onclick=function(){
+    var v=('0'+tH).slice(-2)+':'+('0'+tM).slice(-2);
+    $('modal').classList.remove('open');
+    setTime(id,v,b.title,b.was);
+  };
+  if($('tReset'))$('tReset').onclick=function(){
+    $('modal').classList.remove('open');
+    setTime(id,null,b.title,b.was);
+  };
+}
+function paintTime(b){
+  var v=('0'+tH).slice(-2)+':'+('0'+tM).slice(-2);
+  $('tPrev').innerHTML=v+(v!==b.was?'<span>was '+b.was+'</span>':'<span>as planned</span>');
+  var hs='',i;
+  for(i=0;i<24;i++)hs+='<button class="'+(i===tH?'on':'')+'" data-h="'+i+'">'+('0'+i).slice(-2)+'</button>';
+  $('tHrs').innerHTML=hs;
+  $('tMins').innerHTML=[0,15,30,45].map(function(m){
+    return '<button class="'+(m===tM?'on':'')+'" data-m="'+m+'">:'+('0'+m).slice(-2)+'</button>'}).join('');
+}
+function setTime(id,v,title,was){
+  if(v&&!okTime(v))return;
+  var k=TODAY, prev=(S.times[k]||{})[id]||null;
+  S.times[k]=S.times[k]||{};
+  if(v)S.times[k][id]=v; else delete S.times[k][id];
+  save(); render();
+  toast(title, v?('Moved to '+v):('Back to '+was), '#4D8BFF', function(){
+    S.times[k]=S.times[k]||{};
+    if(prev)S.times[k][id]=prev; else delete S.times[k][id];
+    save(); render();
+  });
+}
+
+/* ---- quick add ---- */
+function renderQA(){
+  $('qa').innerHTML=QUICK.map(function(q,i){
+    return '<button class="qc" style="--tc:'+COL[q[0]]+'" data-q="'+i+'"><i></i>'+esc(q[1])+
+      ' <span style="color:#5D6B7A">'+q[2]+'m</span></button>'}).join('')+
+    '<button class="qc custom" data-custom>'+svg('plus')+'Something else</button>';
+}
+function addExtra(tr,title,min){
+  tr=okTrack(tr)?tr:'S'; title=clean(title,90)||'Unnamed block'; min=okMin(min);
+  S.extra[TODAY]=S.extra[TODAY]||[];
+  S.extra[TODAY].push({tr:tr,title:title,min:min,time:hhmm()});
+  var idx=S.extra[TODAY].length-1, id='x'+idx, entry=S.extra[TODAY][idx];
+  sel=id;
+  save(); render();
+  toast(title,'Added to today · not cleared','#C8FF3F',function(){
+    /* remove this exact entry, then re-key ticks and times for the blocks
+       that shifted down a position, so nothing points at the wrong block */
+    var arr=S.extra[TODAY]||[], at=arr.indexOf(entry); if(at<0)return;
+    arr.splice(at,1);
+    [S.ticks[TODAY],S.times[TODAY]].forEach(function(map){
+      if(!map)return;
+      delete map['x'+at];
+      for(var j=at+1;j<=arr.length;j++){if(map['x'+j]!==undefined){map['x'+(j-1)]=map['x'+j];delete map['x'+j]}}
+    });
+    save(); render();
+  });
+}
+$('qa').onclick=function(e){
+  if(e.target.closest('[data-custom]')){openAdd();return}
+  var b=e.target.closest('[data-q]'); if(!b)return;
+  var q=QUICK[b.dataset.q]; addExtra(q[0],q[1],q[2]);
+};
+var cT='C',cM=30;
+function openAdd(){
+  cT='C';cM=30;
+  $('modal').innerHTML='<div class="sheet">'+
+    '<div class="from" style="color:#C8FF3F">Quick add</div><h3>Something else</h3>'+
+    '<p class="note">It goes on today’s list as an open block. Clear it when you have done it.</p>'+
+    '<div class="lbl">What was it</div><input id="cName" placeholder="e.g. helped a mate set up Claude Code">'+
+    '<div class="lbl">Track</div><div class="chips" id="cTrack"></div>'+
+    '<div class="lbl">How long</div><div class="chips" id="cMin"></div>'+
+    '<div class="pillrow" style="margin:18px 0 0"><button class="pill key" id="cAdd">Add it</button>'+
+    '<button class="pill" data-no>Cancel</button></div></div>';
+  $('cTrack').innerHTML=Object.keys(TR).map(function(k){
+    return '<button class="chipb'+(k===cT?' on':'')+'" style="--cc:'+COL[k]+'" data-t="'+k+'">'+TR[k]+'</button>'}).join('');
+  $('cMin').innerHTML=[10,15,20,30,45,60,90].map(function(m){
+    return '<button class="chipb'+(m===cM?' on':'')+'" data-m="'+m+'">'+m+'m</button>'}).join('');
+  $('modal').classList.add('open');
+  $('cTrack').onclick=function(e){var b=e.target.closest('[data-t]');if(!b)return;cT=b.dataset.t;
+    Array.prototype.forEach.call($('cTrack').children,function(c){c.className='chipb'+(c.dataset.t===cT?' on':'')})};
+  $('cMin').onclick=function(e){var b=e.target.closest('[data-m]');if(!b)return;cM=+b.dataset.m;
+    Array.prototype.forEach.call($('cMin').children,function(c){c.className='chipb'+(+c.dataset.m===cM?' on':'')})};
+  $('cAdd').onclick=function(){
+    var nm=$('cName').value.trim()||'Unnamed block';
+    $('modal').classList.remove('open');
+    addExtra(cT,nm,cM);
+  };
+}
+
+/* --- select, then act --- */
+$('hAdvance').onclick=function(){
+  var n=selBlock(); if(!n)return;
+  var id=n.id,ttl=n.title,was=stOf(today,id);
+  sel=null;
+  if(was==='done'){setSt(today,id,null);toast(ttl,'Back on the list','#4D8BFF',function(){setSt(today,id,'done')})}
+  else{setSt(today,id,'done');toast(ttl,'Cleared','#C8FF3F',function(){setSt(today,id,was||null)})}
+};
+$('hSkip').onclick=function(){
+  var n=selBlock(); if(!n)return;
+  askSkip(n.id);
+};
+$('hActs').onclick=function(e){
+  var t=e.target.closest('[data-time]');
+  if(t){openTime(t.dataset.time)}
+};
+$('hAside').onclick=function(e){
+  var r=e.target.closest('[data-restore]');
+  if(r)setSt(today,r.dataset.restore,null);
+};
+function askSkip(id){
+  var b=blocks(today).filter(function(x){return x.id===id})[0]; if(!b)return;
+  $('modal').innerHTML='<div class="sheet">'+
+    '<div class="from">Not today</div>'+
+    '<h3>'+esc(b.title)+'</h3>'+
+    '<p class="note">It leaves today’s list, but it stays on the day as a missed block — it still counts in the week and in your results. Nothing is deleted, and you can put it back.</p>'+
+    '<div class="pillrow" style="margin:16px 0 0">'+
+      '<button class="pill warn" data-yes="'+id+'">Yes, set it aside</button>'+
+      '<button class="pill" data-no>Keep it</button></div></div>';
+  $('modal').classList.add('open');
+}
+$('modal').onclick=function(e){
+  var y=e.target.closest('[data-yes]');
+  if(y){var id=y.dataset.yes,b=blocks(today).filter(function(x){return x.id===id})[0];
+    $('modal').classList.remove('open');sel=null;setSt(today,id,'skip');
+    if(b)toast(b.title,'Set aside · still counts as missed','#FF4D6D',function(){setSt(today,id,null)});
+    return}
+  var rs=e.target.closest('[data-rest]');
+  if(rs){$('modal').classList.remove('open');restoreSnap(rs.dataset.rest);return}
+  if(e.target.closest('[data-no]')||e.target.id==='modal'){$('modal').classList.remove('open');renderHome()}
+};
+
+/* ==========================================================================
+   CENTRAL
+   ========================================================================== */
+function markRow(m){
+  var d=new Date(m.date+'T00:00:00'), dd=days(today,d), done=S.marks[m.id], past=m.date<TODAY;
+  return '<button class="r" style="--tc:'+COL[m.tr]+'" data-mark="'+esc(m.id)+'">'+
+   '<span class="flag"></span><span class="grow"><b style="'+(done?'text-decoration:line-through;color:#5D6B7A':'')+'">'+esc(m.title)+'</b>'+
+   (m.note?'<em>'+esc(m.note)+'</em>':'')+'</span>'+
+   '<span class="chip'+(m.fixed?' hot':m.signed?' ok':'')+'">'+(m.fixed?'Fixed':m.signed?'Signed':'Target')+'</span>'+
+   '<span class="num" style="width:54px;text-align:right">'+(done?'Done':past?'Passed':dd===0?'Today':'D-'+dd)+'</span></button>';
+}
+function howHTML(title,tr,key){
+  if(!howOpen[key])return '';
+  var a=howFor(title);
+  if(!a)return '<div class="how" style="--tc:'+COL[tr]+'"><div class="ttl">What this is</div>'+
+    '<p>No note for this one. If it is from before 18 October, it belongs to plan v1; otherwise treat the line under the task as the instruction.</p></div>';
+  return '<div class="how" style="--tc:'+COL[tr]+'"><div class="ttl">What it is, and how to do it</div>'+
+    a.map(function(x){return '<p>'+esc(x)+'</p>'}).join('')+'</div>';
+}
+function resultOf(d){
+  var bs=blocks(d),done=0,skip=0;
+  bs.forEach(function(b){var s=stOf(d,b.id); if(s==='done')done++; else if(s==='skip')skip++});
+  var miss=bs.length-done, pct=bs.length?done/bs.length:0;
+  var logged=!!S.ticks[dkey(d)], g, col, line;
+  if(!bs.length){g='–';col='#5D6B7A';line='No blocks scheduled'}
+  else if(!logged){g='–';col='#5D6B7A';line='Not logged'}
+  else if(pct>=.8){g='W';col='#C8FF3F';line='Held the line'}
+  else if(pct>=.5){g='D';col='#F5C542';line='Partial day'}
+  else {g='L';col='#FF4D6D';line='Collapsed — floor rule applies'}
+  return {done:done,miss:miss,skip:skip,g:g,col:col,pct:pct,line:line,total:bs.length,logged:logged};
+}
+function renderForm(){
+  var out='',i;
+  for(i=5;i>=1;i--){
+    var d=new Date(today);d.setDate(d.getDate()-i);
+    var r=resultOf(d);
+    out+='<div class="fp" style="--fc:'+r.col+'"><b>'+r.g+'</b>'+
+      '<em>'+(r.logged&&r.total?r.done+'&ndash;'+r.miss:'&ndash;')+'</em>'+
+      '<span>'+d.toLocaleDateString('en-GB',{weekday:'short'})+'</span></div>';
+  }
+  $('hForm').innerHTML=out;
+}
+function renderCentral(){
+  var base=new Date(today);base.setHours(0,0,0,0);base.setDate(base.getDate()-base.getDay()+wk*7);
+  var end=new Date(base);end.setDate(end.getDate()+6);
+  var f=function(d){return d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})};
+  $('cSub').textContent=(wk===0?'This week · ':wk===1?'Next week · ':wk===-1?'Last week · ':'')+f(base)+' – '+f(end)+' · '+phaseName(base);
+
+  var mins=0,done=0,tot=0,byTrack={},i,d;
+  for(i=0;i<7;i++){d=new Date(base);d.setDate(d.getDate()+i);
+    blocks(d).forEach(function(b){mins+=b.min;tot++;byTrack[b.tr]=(byTrack[b.tr]||0)+b.min;if(stOf(d,b.id)==='done')done++})}
+  $('cStats').innerHTML=
+    '<div class="stat"><b>'+Math.round(mins/60*10)/10+'h</b><span>Scheduled</span></div>'+
+    '<div class="stat"><b>'+done+' / '+tot+'</b><span>Blocks cleared</span></div>'+
+    '<div class="stat"><b>'+Math.round((byTrack.P||0)/60*10)/10+'h</b><span>Psychometric</span></div>'+
+    '<div class="stat"><b>'+Math.round((byTrack.C||0)/60*10)/10+'h</b><span>AI Coding</span></div>';
+
+  var AM=allMarks();
+  var inWk=AM.filter(function(m){return m.date>=dkey(base)&&m.date<=dkey(end)});
+  $('cMkCount').textContent=inWk.length?inWk.filter(function(m){return S.marks[m.id]}).length+' / '+inWk.length+' cleared':'';
+  var nx=AM.filter(function(m){return m.date>dkey(end)})[0];
+  $('cMarks').innerHTML=inWk.length?inWk.map(markRow).join('')
+    :'<div style="padding:15px" class="note">Nothing falls due this week. Clear ground — spend it on whichever track has been quietest.</div>'+(nx?markRow(nx):'');
+
+  var h='',res='',nFix=0,nRes=0;
+  for(i=0;i<7;i++){
+    d=new Date(base);d.setDate(d.getDate()+i);
+    var t=tpl(d), bs=blocks(d), tt=bs.reduce(function(s,x){return s+x.min},0), isNow=dkey(d)===TODAY;
+    var past=dkey(d)<TODAY, rr=resultOf(d), one='';
+    one+='<div class="panel" style="margin-bottom:8px'+(isNow?';border-color:rgba(200,255,63,.35)':'')+'">'+
+      '<div class="ph" style="--fc:'+rr.col+'">'+(past?'<span class="res">'+rr.g+'</span>':'')+
+      '<b>'+d.toLocaleDateString('en-GB',{weekday:'long'})+'</b>'+
+      (past?'':'<span class="chip'+(t.heavy?'':' ok')+'">'+(t.heavy?'Duty':esc(t.label))+'</span>')+
+      (past?(rr.logged?'<span class="score">'+rr.done+'&ndash;'+rr.miss+'</span>':'<span class="score" style="color:#5D6B7A">&ndash;</span>'):'')+
+      '<span class="rt">'+f(d)+' · '+(past?rr.line:Math.floor(tt/60)+'h '+(tt%60)+'m')+'</span></div>'+
+      '<div style="display:flex;height:3px;background:rgba(255,255,255,.07)">'+
+        bs.map(function(x){return '<i style="flex:'+x.min+';background:'+COL[x.tr]+'"></i>'}).join('')+'</div>'+
+      '<div class="rows">'+(bs.map(function(b){
+        var s=stOf(d,b.id), hk=dkey(d)+'|'+b.id;
+        return '<div class="r" style="--tc:'+COL[b.tr]+'" data-d="'+dkey(d)+'" data-id="'+b.id+'" role="button" tabindex="0">'+
+          '<span class="flag"></span><span class="num" style="width:38px">'+b.time+'</span>'+
+          '<span class="grow"><b style="'+(s==='done'?'text-decoration:line-through;color:#5D6B7A':'')+'">'+esc(b.title)+'</b>'+
+          (b.note?'<em>'+esc(b.note)+'</em>':'')+'</span><span class="num">'+b.min+'m</span>'+
+          '<button class="qm'+(howOpen[hk]?' on':'')+'" data-how="'+hk+'" aria-label="What is this task">?</button>'+
+          '</div>'+howHTML(b.title,b.tr,hk);
+      }).join('')||'<div style="padding:13px 15px" class="note">Nothing scheduled.</div>')+'</div></div>';
+    if(past){res+=one;nRes++}else{h+=one;nFix++}
+  }
+  $('cDays').innerHTML=h||'<div class="panel"><div class="mailbody"><p class="note">Week is played out. Look at the results above, then move to next week.</p></div></div>';
+  $('cResults').innerHTML=res||'<div class="panel"><div class="mailbody"><p class="note">Nothing played yet this week. Results appear here the day after each one.</p></div></div>';
+  $('cFixCount').textContent=nFix?nFix+' to play':'None left';
+  $('cResCount').textContent=nRes?nRes+' played':'';
+}
+$('cPrev').onclick=function(){wk--;renderCentral()};
+$('cNext').onclick=function(){wk++;renderCentral()};
+$('cNow').onclick=function(){wk=0;renderCentral()};
+document.addEventListener('click',function(e){
+  var q=e.target.closest('[data-how]');
+  if(q){var hk=q.dataset.how; if(howOpen[hk])delete howOpen[hk]; else howOpen[hk]=1; render(); return}
+  var mk=e.target.closest('[data-mark]');
+  if(mk){var id=mk.dataset.mark; if(S.marks[id])delete S.marks[id]; else S.marks[id]=1; save();render();return}
+  var r=e.target.closest('.r[data-id]');
+  if(r){var dd=new Date(r.dataset.d+'T00:00:00'); setSt(dd,r.dataset.id,stOf(dd,r.dataset.id)==='done'?null:'done')}
+});
+
+/* ==========================================================================
+   NOTIFICATIONS
+   ========================================================================== */
+function mailList(){
+  var mine=(S.dumps||[]).map(function(d){
+    return {key:'d'+d.ts,mine:1,ts:d.ts,tr:'S',raw:d.text,
+      from:'You · '+new Date(d.ts).toLocaleDateString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+
+           (d.edited?' · edited':''),
+      sub:d.text.slice(0,46)+(d.text.length>46?'…':''),
+      body:d.read?[d.text,'— Assistant manager: '+d.read]:[d.text]}});
+  var plan=MAIL.map(function(m,i){
+    return {key:'mv'+i,from:m.from,sub:m.sub,tr:m.tr,hot:m.hot,body:m.body}});
+  return mine.concat(plan);
+}
+function renderNotif(){
+  var list=mailList();
+  var unread=list.filter(function(m){return !S.marks[m.key]}).length;
+  if(mailSel>=list.length)mailSel=0;
+  $('nSub').textContent=unread+' unread. Every one of these is something the plan will hold you to.';
+  $('nCount').textContent=unread+' unread';
+  $('nList').innerHTML=list.map(function(m,i){
+   return '<button class="r'+(i===mailSel?' sel':'')+'" style="--tc:'+COL[m.tr]+'" data-mail="'+i+'">'+
+   '<span class="flag"></span><span class="grow"><b>'+esc(m.sub)+'</b><em>'+esc(m.from)+'</em></span>'+
+   (m.hot?'<span class="chip hot">Deadline</span>':'')+
+   (S.marks[m.key]?'':'<span class="unread" style="background:'+(m.mine?COL.S:'#4D8BFF')+'"></span>')+'</button>'}).join('');
+  var m=list[mailSel]||list[0];
+  $('nBody').innerHTML='<div class="from">'+esc(m.from)+' · '+TR[m.tr]+'</div><h3>'+esc(m.sub)+'</h3>'+
+    m.body.map(function(p){return '<p>'+esc(p)+'</p>'}).join('')+
+    '<div class="pillrow" style="margin:0"><button class="pill'+(S.marks[m.key]?'':' key')+'" data-read="'+m.key+'">'+
+    (S.marks[m.key]?'Marked read':'Mark as read')+'</button>'+
+    (m.mine?'<button class="pill" data-edit="'+m.ts+'">Edit</button>'+
+            '<button class="pill" data-del="'+m.ts+'">Delete</button>':'')+
+    '</div>';
+}
+$('nList').onclick=function(e){var b=e.target.closest('[data-mail]'); if(b){mailSel=+b.dataset.mail;renderNotif()}};
+$('nBody').onclick=function(e){
+  var r=e.target.closest('[data-read]');
+  if(r){var k=r.dataset.read; if(S.marks[k])delete S.marks[k]; else S.marks[k]=1; save();renderNotif();return}
+  var ed=e.target.closest('[data-edit]'); if(ed){editDump(+ed.dataset.edit);return}
+  var dl=e.target.closest('[data-del]'); if(dl){askDelDump(+dl.dataset.del)}
+};
+function findDump(ts){
+  for(var i=0;i<S.dumps.length;i++){if(S.dumps[i].ts===ts)return i}
+  return -1;
+}
+function editDump(ts){
+  var i=findDump(ts); if(i<0)return;
+  var d=S.dumps[i];
+  $('modal').innerHTML='<div class="sheet">'+
+    '<div class="from" style="color:#9BC2FF">Your message</div><h3>Edit</h3>'+
+    '<textarea id="edText" style="margin-top:12px">'+esc(d.text)+'</textarea>'+
+    (d.read?'<p class="note" style="margin-top:10px">The reply underneath stays as it was. It answered what you '+
+            'originally wrote, so rewriting the message does not make it fit better.</p>':'')+
+    '<div class="pillrow" style="margin:16px 0 0"><button class="pill key" id="edSave">Save</button>'+
+    '<button class="pill" data-no>Cancel</button></div></div>';
+  $('modal').classList.add('open');
+  $('edSave').onclick=function(){
+    var v=clean($('edText').value,4000).trim();
+    $('modal').classList.remove('open');
+    if(!v)return;
+    var j=findDump(ts); if(j<0)return;
+    var was=S.dumps[j].text;
+    if(v===was)return;
+    S.dumps[j].text=v; S.dumps[j].edited=1;
+    save(); render();
+    toast('Message edited','Reply left as it was','#4D8BFF',function(){
+      var q=findDump(ts); if(q<0)return;
+      S.dumps[q].text=was; delete S.dumps[q].edited; save(); render();
+    });
+  };
+}
+function askDelDump(ts){
+  var i=findDump(ts); if(i<0)return;
+  var d=S.dumps[i];
+  $('modal').innerHTML='<div class="sheet">'+
+    '<div class="from">Delete</div><h3>'+esc(d.text.slice(0,60)+(d.text.length>60?'…':''))+'</h3>'+
+    '<p class="note">This one is gone for good once the undo strip disappears. The reply goes with it.</p>'+
+    '<div class="pillrow" style="margin:16px 0 0"><button class="pill warn" id="delYes">Delete it</button>'+
+    '<button class="pill" data-no>Keep it</button></div></div>';
+  $('modal').classList.add('open');
+  $('delYes').onclick=function(){
+    $('modal').classList.remove('open');
+    var j=findDump(ts); if(j<0)return;
+    var gone=S.dumps[j], at=j, readFlag=S.marks['d'+ts];
+    S.dumps.splice(j,1); delete S.marks['d'+ts];
+    mailSel=0; save(); render();
+    toast('Message deleted','Removed from the inbox','#FF4D6D',function(){
+      S.dumps.splice(Math.min(at,S.dumps.length),0,gone);
+      if(readFlag)S.marks['d'+ts]=readFlag;
+      save(); render();
+    });
+  };
+}
+
+var pending=[];
+$('dmpSave').onclick=function(){
+  var t=$('dmpText').value.trim(); if(!t)return;
+  S.dumps.unshift({ts:Date.now(),text:clean(t,4000)});save();
+  $('dmpText').value='';$('dmpOut').innerHTML='';mailSel=0;renderNotif();
+};
+$('dmpSort').onclick=function(){
+  var t=$('dmpText').value.trim(); if(!t)return;
+  $('dmpSpin').style.display='';$('dmpOut').innerHTML='';
+  ask('Someone dumped their unstructured thoughts below. '+planLine()+'\n\nReturn ONLY JSON, no preamble, no markdown:\n{"read":"one or two sentences naming what is actually going on underneath this - plain, not therapeutic, no flattery, no praise","tasks":[{"track":"C|P|M|R|B|S","title":"a concrete action under 9 words","min":15}]}\n\nAt most 4 tasks. Only genuinely actionable things. If it is a feeling rather than a task, leave it out of tasks and say so in "read". Fewer tasks is better than padding.\n\nThe dump:\n'+t)
+  .then(function(res){
+    pending=(res.tasks||[]).slice(0,4).map(function(x){return {track:okTrack(x.track)?x.track:'S',title:clean(x.title,90),min:okMin(x.min)}});
+    var read=clean(res.read,600);
+    $('dmpOut').innerHTML='<div class="panel" style="margin-top:14px"><div class="ph"><b>Reply</b>'+
+      '<span class="rt">Assistant manager</span></div><div class="mailbody" style="padding-bottom:6px">'+
+      '<p>'+esc(read)+'</p></div>'+
+      (pending.length?'<div class="rows">'+pending.map(function(x,i){
+        return '<div class="r" style="--tc:'+COL[x.track]+'"><span class="flag"></span>'+
+        '<span class="grow"><b>'+esc(x.title)+'</b><em>'+TR[x.track]+' · '+x.min+' min</em></span>'+
+        '<button class="pill" style="padding:6px 14px;font-size:11px" data-add="'+i+'">Add to today</button></div>'}).join('')+'</div>'
+       :'<div class="mailbody" style="padding-top:0"><p class="note">Nothing here turns into a task. Saved as it is.</p></div>')+'</div>';
+    S.dumps.unshift({ts:Date.now(),text:clean(t,4000),read:read});save();
+    $('dmpText').value='';mailSel=0;renderNotif();
+  })
+  .catch(function(){
+    $('dmpOut').innerHTML='<div class="panel" style="margin-top:14px"><div class="mailbody"><p class="note">'+
+      'No API key set (Customise tab), or the call failed. Your text is still in the box &mdash; press "Just save it".</p></div></div>';
+  })
+  .then(function(){$('dmpSpin').style.display='none'});
+};
+$('dmpOut').addEventListener('click',function(e){
+  var b=e.target.closest('[data-add]'); if(!b)return;
+  var x=pending[b.dataset.add]; if(!x)return;
+  S.extra[TODAY]=S.extra[TODAY]||[];
+  S.extra[TODAY].push({tr:x.track,title:x.title,min:x.min,time:'22:45'});
+  save();b.textContent='Added';b.disabled=true;render();
+});
+
+/* ==========================================================================
+   SQUAD
+   ========================================================================== */
+function renderSquad(){
+  $('sList').innerHTML=SQUAD.map(function(p,i){
+   return '<button class="r'+(i===sqSel?' sel':'')+'" style="--tc:'+COL[p.tr]+'" data-sq="'+i+'">'+
+   '<span class="ovr"><b style="color:'+COL[p.tr]+'">'+(p.ovr==null?'??':p.ovr)+'</b><span>Now</span></span>'+
+   '<span class="chip" style="color:'+COL[p.tr]+';border-color:'+COL[p.tr]+'66">'+p.pos+'</span>'+
+   '<span class="grow"><b>'+p.name+'</b><em>'+esc(p.note)+'</em></span>'+
+   '<span class="ovr"><b style="font-size:15px;color:#8B99A8">'+p.pot+'</b><span>April</span></span></button>'}).join('');
+  var p=SQUAD[sqSel];
+  $('sDetail').innerHTML='<div class="ph"><b>'+p.name+'</b>'+
+    '<span class="chip" style="color:'+COL[p.tr]+';border-color:'+COL[p.tr]+'66">'+p.pos+'</span>'+
+    '<span class="rt">'+(p.ovr==null?'Unrated':p.ovr+' → '+p.pot)+'</span></div>'+
+    '<div class="mailbody" style="padding-bottom:6px"><p class="note">'+esc(p.line)+'</p></div>'+
+    p.at.map(function(a){return '<div class="attr" style="--tc:'+COL[p.tr]+'"><span class="k">'+a[0]+'</span>'+
+      '<span class="v" style="color:'+(a[1]==null?'#5D6B7A':COL[p.tr])+'">'+(a[1]==null?'—':a[1])+'</span>'+
+      '<span class="bar"><i style="width:'+(a[1]||0)+'%"></i></span></div>'}).join('');
+}
+$('sList').onclick=function(e){var b=e.target.closest('[data-sq]'); if(b){sqSel=+b.dataset.sq;renderSquad()}};
+
+/* ==========================================================================
+   TRANSFERS
+   ========================================================================== */
+function last7(){
+  var out=[],i;
+  for(i=1;i<=7;i++){
+    var d=new Date(today);d.setDate(d.getDate()-i);
+    var bs=blocks(d),t=S.ticks[dkey(d)]||{};
+    out.push({d:d,date:dkey(d),
+      done:bs.filter(function(b){return t[b.id]==='done'}),
+      missed:bs.filter(function(b){return t[b.id]!=='done'})});
+  }
+  return out;
+}
+function renderTransfers(){
+  var w=last7();
+  var done=w.reduce(function(s,x){return s+x.done.length},0);
+  var miss=w.reduce(function(s,x){return s+x.missed.length},0);
+  var by={};w.forEach(function(x){x.done.forEach(function(b){by[b.tr]=(by[b.tr]||0)+1})});
+  var quiet=Object.keys(TR).filter(function(k){return k!=='S'&&k!=='U'&&k!=='D'}).sort(function(a,b){return (by[a]||0)-(by[b]||0)})[0];
+  var pct=done+miss?Math.round(done/(done+miss)*100):0;
+  $('trForm').innerHTML=
+    '<div class="stat"><b>'+done+'</b><span>Blocks cleared</span></div>'+
+    '<div class="stat"><b>'+miss+'</b><span>Missed</span></div>'+
+    '<div class="stat"><b style="color:'+COL[quiet]+'">'+TR[quiet]+'</b><span>Quietest track</span></div>';
+  $('trQuiet').textContent=pct+'% of scheduled blocks';
+  $('trLog').innerHTML=w.map(function(x){
+    var tot=x.done.length+x.missed.length;
+    return '<div class="r" style="--tc:'+(tot&&x.done.length/tot>=.6?'#C8FF3F':x.done.length?'#F5C542':'#FF4D6D')+'">'+
+      '<span class="flag"></span><span class="grow"><b>'+x.d.toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'short'})+'</b>'+
+      '<em>'+esc(x.done.length?x.done.map(function(b){return b.title}).join(' · '):'Nothing cleared')+'</em></span>'+
+      '<span class="num">'+x.done.length+' / '+tot+'</span></div>'}).join('');
+}
+function panelList(title,arr,tone){
+  if(!arr||!arr.length)return '';
+  return '<div class="panel"><div class="ph"><b>'+title+'</b></div><div class="rows">'+
+    arr.map(function(x){return '<div class="r" style="--tc:'+tone+'"><span class="flag"></span>'+
+      '<span class="grow"><b>'+esc(clean(x,200))+'</b></span></div>'}).join('')+'</div></div>';
+}
+$('trGo').onclick=function(){
+  $('trSpin').style.display='';$('trOut').innerHTML='';
+  var w=last7();
+  var summary=w.map(function(x){return x.date+': done '+(x.done.map(function(b){return b.title}).join('; ')||'nothing')+
+    ' | missed '+(x.missed.map(function(b){return b.title}).join('; ')||'nothing')}).join('\n');
+  ask(planLine()+' His own written collapse rule: "'+COLLAPSE+'"\n\nLast seven days:\n'+summary+'\n\nWhat he says got in the way: '+($('trWhy').value||'(nothing written)')+'\n\nHe is renegotiating the week, not quitting it. Return ONLY JSON:\n{"diagnosis":"two sentences on what the pattern actually shows - direct, no reassurance, no praise","keep":["the 2-3 blocks that stay exactly as they are"],"shrink":["blocks that stay but smaller, with the new size stated"],"cut":["what leaves the week entirely, and until when"],"one":"the single change to make tomorrow"}\n\nBe willing to say the plan was too big. Protect the shoulder work and, from February, the psychometric. Do not tell him to try harder.')
+  .then(function(res){
+    $('trOut').innerHTML=
+      '<div class="sechead"><div class="eyebrow">The window</div><div class="rule"></div></div>'+
+      '<div class="panel"><div class="mailbody"><div class="from">Assistant manager</div>'+
+      '<p>'+esc(clean(res.diagnosis,600))+'</p></div></div>'+
+      '<div class="grid3" style="margin-top:12px">'+
+        panelList('Contract renewed',res.keep,'#C8FF3F')+
+        panelList('Loaned out · smaller',res.shrink,'#F5C542')+
+        panelList('Released',res.cut,'#FF4D6D')+
+      '</div>'+
+      '<div class="panel" style="margin-top:12px;border-color:rgba(200,255,63,.4)"><div class="mailbody">'+
+      '<div class="from">Tomorrow</div><p style="color:#EDF2F7;font-weight:600">'+esc(clean(res.one,300))+'</p></div></div>';
+  })
+  .catch(function(){
+    $('trOut').innerHTML='<div class="panel" style="margin-top:14px"><div class="mailbody">'+
+      '<div class="from">No key set</div><p class="note">Add an API key in Customise, or fall back to your own written rule: '+COLLAPSE+'</p></div></div>';
+  })
+  .then(function(){$('trSpin').style.display='none'});
+};
+
+/* ==========================================================================
+   ACADEMY
+   ========================================================================== */
+function renderAcademy(){
+  $('acList').innerHTML=ACAD.map(function(a){
+   return '<div class="r" style="--tc:'+COL[a.tr]+'"><span class="flag"></span>'+
+   '<span class="ovr"><b style="font-size:17px;color:'+COL[a.tr]+'">'+a.cur+'</b><span>Now</span></span>'+
+   '<span class="grow"><b>'+esc(a.n)+'</b><em>'+esc(a.s)+'</em></span>'+
+   '<span style="flex:none;text-align:right"><span class="stars">'+
+     new Array(a.st+1).join('★')+'<span class="off">'+new Array(6-a.st).join('★')+'</span></span>'+
+   '<div class="num" style="margin-top:5px">'+a.eta+'</div></span></div>'}).join('');
+  $('acNote').textContent='Three prospects pull double duty. Hebrew high register is psychometric prep. The stock project is both the coding flagship and the money goal. Shoulder stability is what every other body number stands on. Develop those three and the rest of the squad improves around them.';
+}
+
+/* ==========================================================================
+   SCOUTING
+   ========================================================================== */
+var scPick={where:'any',cost:'mid',aim:'job'};
+var scRep=SC_BENCH.slice();
+function pillRow(id,opts,key){
+  $(id).innerHTML=opts.map(function(o){
+    return '<button class="pill'+(scPick[key]===o[0]?' key':'')+'" data-sc="'+key+'|'+o[0]+'">'+o[1]+'</button>'}).join('');
+}
+function scoutCard(p,i){
+  var signed=(S.signed||[]).some(function(s){return s.title===p.name});
+  return '<div class="panel" style="margin-bottom:10px;--tc:'+COL[p.tr]+'">'+
+    '<div class="ph"><span class="ovr" style="width:38px"><b style="font-size:19px;color:'+COL[p.tr]+'">'+p.ovr+'</b><span>Pot</span></span>'+
+    '<span class="chip" style="color:'+COL[p.tr]+';border-color:'+COL[p.tr]+'66">'+esc(p.pos)+'</span>'+
+    '<b style="flex:1;min-width:0;font-size:13.5px;letter-spacing:-.01em;text-transform:none">'+esc(p.name)+'</b>'+
+    '<span class="rt">'+TR[p.tr]+'</span></div>'+
+    '<div class="mailbody" style="padding-bottom:10px"><p>'+esc(p.why)+'</p>'+
+    '<div class="grid3" style="margin:14px 0 4px">'+
+      scBar('Fit',p.fit,COL[p.tr])+scBar('Cost',p.cost,'#F5C542')+scBar('Payoff by April',p.pay,'#C8FF3F')+
+    '</div></div>'+
+    '<div class="rows">'+p.first.map(function(s,j){
+      return '<div class="r" style="--tc:'+COL[p.tr]+'"><span class="flag"></span>'+
+        '<span class="num" style="width:20px">'+(j+1)+'</span>'+
+        '<span class="grow"><b style="font-weight:600">'+esc(s)+'</b></span></div>'}).join('')+'</div>'+
+    '<div class="mailbody" style="padding-top:12px"><div class="from">The catch</div><p class="note">'+esc(p.risk)+'</p>'+
+    '<div class="pillrow" style="margin:14px 0 0">'+
+      '<button class="pill'+(signed?'':' key')+'" data-sign="'+i+'"'+(signed?' disabled':'')+'>'+
+      (signed?'Signed':'Sign · '+esc(p.per)+' · by '+new Date(p.by+'T00:00:00').toLocaleDateString('en-GB',{month:'short',year:'numeric'}))+'</button>'+
+    '</div></div></div>';
+}
+function scBar(k,v,c){
+  v=Math.max(0,Math.min(100,+v||0));
+  return '<div><div style="display:flex;justify-content:space-between;font-size:10px;font-weight:800;letter-spacing:.1em;'+
+    'text-transform:uppercase;color:var(--dim);margin-bottom:5px"><span>'+k+'</span><span style="color:'+c+'">'+v+'</span></div>'+
+    '<div class="bar"><i style="width:'+v+'%;background:'+c+'"></i></div></div>';
+}
+function renderScout(){
+  pillRow('scWhere',SC_WHERE,'where');pillRow('scCost',SC_COST,'cost');pillRow('scAim',SC_AIM,'aim');
+  $('scCount').textContent=scRep.length+' watched';
+  $('scList').innerHTML=scRep.map(scoutCard).join('');
+  var sg=S.signed||[];
+  $('scSignedCount').textContent=sg.length?sg.length+' added to the plan':'';
+  $('scSigned').innerHTML=sg.length?sg.map(function(s){
+    return '<div class="r" style="--tc:'+COL[s.tr]+'"><span class="flag"></span>'+
+      '<span class="grow"><b>'+esc(s.title)+'</b><em>'+esc(s.note||'')+'</em></span>'+
+      '<span class="chip">'+new Date(s.date+'T00:00:00').toLocaleDateString('en-GB',{month:'short',year:'numeric'})+'</span>'+
+      '<button class="pill" style="padding:6px 12px;font-size:11px" data-unsign="'+esc(s.id)+'">Release</button></div>'}).join('')
+   :'<div style="padding:15px" class="note">Nothing signed. Anything you sign becomes a dated objective in Office and shows up in the week it falls due.</div>';
+}
+$('t-scout').addEventListener('click',function(e){
+  var f=e.target.closest('[data-sc]');
+  if(f){var pr=f.dataset.sc.split('|');scPick[pr[0]]=pr[1];renderScout();return}
+  var s=e.target.closest('[data-sign]');
+  if(s){
+    var p=scRep[s.dataset.sign]; if(!p)return;
+    S.signed=S.signed||[];
+    S.signed.push({id:'s'+Date.now(),date:p.by,tr:p.tr,title:p.name,note:p.first[0]||'',signed:1});
+    S.signed.sort(function(a,b){return a.date<b.date?-1:1});
+    save();render();return;
+  }
+  var u=e.target.closest('[data-unsign]');
+  if(u){S.signed=(S.signed||[]).filter(function(x){return x.id!==u.dataset.unsign});save();render()}
+});
+$('scGo').onclick=function(){
+  $('scSpin').style.display='';
+  var sq=SQUAD.map(function(p){return p.name+' '+(p.ovr==null?'unrated':p.ovr)+' now, '+p.pot+' target'}).join('; ');
+  var where=SC_WHERE.filter(function(o){return o[0]===scPick.where})[0][1];
+  var cost=SC_COST.filter(function(o){return o[0]===scPick.cost})[0][1];
+  var aim=SC_AIM.filter(function(o){return o[0]===scPick.aim})[0][1];
+  ask(planLine()+' Current standing: '+sq+'.\n\nScout him THREE new goals he is not already doing. Constraints he set: look '+where+'. He has room for about '+cost+'. He wants it to serve: '+aim+'.\n\nRules: each must be genuinely new, not a restatement of something above. Prefer goals that make two existing tracks feed each other over goals that add a sixth thing. Nothing that loads the shoulder in end-range positions. Be willing to propose something that sounds unglamorous. No flattery, no motivational language.\n\nReturn ONLY JSON, no preamble, no markdown:\n{"prospects":[{"name":"under 8 words","track":"C|P|M|R|B|S","pos":"a 2-3 letter football position that fits its role","ovr":60-85,"fit":0-100,"cost":0-100,"pay":0-100,"per":"time cost per week, under 5 words","by":"YYYY-MM-DD between 2026-11-08 and 2027-04-15","why":"2-3 sentences on why this specifically fits his situation, concrete","first":["three first steps, under 9 words each"],"risk":"one or two sentences on the real cost or failure mode"}]}')
+  .then(function(res){
+    if(res.prospects&&res.prospects.length){
+      scRep=res.prospects.slice(0,3).map(function(p){
+        var d=okDate(p.by)?p.by:'2027-01-31';
+        return {name:clean(p.name,80),tr:okTrack(p.track)?p.track:'S',pos:clean(p.pos||'SUB',3),
+          ovr:Math.max(40,Math.min(99,+p.ovr||65)),fit:+p.fit||60,cost:+p.cost||40,pay:+p.pay||60,
+          per:clean(p.per||'2 h a week',40),by:d,why:clean(p.why,600),first:(p.first||[]).slice(0,3).map(function(x){return clean(x,90)}),risk:clean(p.risk,400)}});
+      renderScout();
+    }
+  })
+  .catch(function(){
+    scRep=SC_BENCH.slice();renderScout();
+    $('scList').insertAdjacentHTML('afterbegin','<div class="panel" style="margin-bottom:10px"><div class="mailbody">'+
+      '<div class="from">Scouts unavailable</div><p class="note">No API key set (Customise tab), or the call failed. '+
+      'Below is the standing shortlist &mdash; four goals that fit the plan but are not in it yet.</p></div></div>');
+  })
+  .then(function(){$('scSpin').style.display='none'});
+};
+
+/* ==========================================================================
+   FINANCES — structure, paperwork, learning ladder. Lives in Office.
+   ========================================================================== */
+function renderMoney(){
+  $('ofMoney').innerHTML='<div class="panel"><div class="ph"><b>Structure</b><span class="rt">Framework, not advice</span></div>'+
+    '<div style="padding:16px 15px">'+
+    '<div style="display:flex;height:9px;border-radius:5px;overflow:hidden;background:rgba(255,255,255,.08)">'+
+      '<i style="flex:90;background:'+COL.M+'"></i><i style="flex:10;background:'+COL.R+'"></i></div>'+
+    '<div class="grid3" style="margin-top:14px">'+
+      '<div class="stat"><b style="color:'+COL.M+'">Core</b><span>US-domiciled ETFs · long term</span></div>'+
+      '<div class="stat"><b style="color:'+COL.R+'">Play ≤ cap</b><span>Separate · never refilled from core</span></div>'+
+      '<div class="stat"><b style="color:'+COL.S+'">Cash</b><span>Buffer for release + the business</span></div></div>'+
+    '<p class="note" style="margin-top:14px">The split shown is a placeholder. The real numbers go in your IPS by 15 December, and the vehicles wait for the cross-border tax hour — as a US filer, the usual Israeli defaults may not suit you.</p>'+
+    '</div></div>';
+  $('ofDeals').innerHTML=DEALS.map(function(d){
+   return '<div class="r" style="--tc:'+COL.M+'"><span class="flag"></span>'+
+   '<span class="grow"><b>'+esc(d.n)+'</b><em>'+esc(d.d)+'</em></span>'+
+   '<span class="chip'+(d.hot?' hot':'')+'">'+esc(d.st)+'</span></div>'}).join('');
+  $('ofShort').innerHTML=SHORTL.map(function(s){
+   return '<div class="r" style="--tc:'+COL.M+'"><span class="flag"></span>'+
+   '<span class="grow"><b>'+esc(s.n)+'</b>'+(s.d?'<em>'+esc(s.d)+'</em>':'')+'</span>'+
+   '<span class="num">'+esc(s.w)+'</span></div>'}).join('');
+}
+
+/* ==========================================================================
+   OFFICE
+   ========================================================================== */
+function renderOffice(){
+  var AM=allMarks();
+  var cleared=AM.filter(function(m){return S.marks[m.id]}).length;
+  var overdue=AM.filter(function(m){return m.date<TODAY && !S.marks[m.id]}).length;
+  $('ofStats').innerHTML=
+    '<div class="stat"><b>'+days(today,OUT)+'</b><span>Days to release</span></div>'+
+    '<div class="stat"><b>'+days(today,EXAM)+'</b><span>Days to the exam</span></div>'+
+    '<div class="stat"><b>'+cleared+' / '+AM.length+'</b><span>Objectives cleared</span></div>';
+  $('ofCount').textContent=overdue?overdue+' overdue':'None overdue';
+  var grouped={},order=[];
+  AM.forEach(function(m){
+    var mo=new Date(m.date+'T00:00:00').toLocaleDateString('en-GB',{month:'long',year:'numeric'});
+    if(!grouped[mo]){grouped[mo]=[];order.push(mo)}
+    grouped[mo].push(m)});
+  $('ofList').innerHTML=order.map(function(mo){
+    return '<div style="padding:10px 15px;border-top:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.025)">'+
+      '<span class="eyebrow">'+mo+'</span></div>'+grouped[mo].map(markRow).join('')}).join('');
+  $('ofContract').innerHTML=
+    '<div class="from">Terms · plan v2</div><h3>Release 31 March · exam 18 April 2027</h3>'+
+    '<p>Twenty-four weeks from 1 November, five tracks, one hard external date. Languages and Body run on autopilot all season. AI Coding owns the surplus until February; the psychometric owns it from February and takes the 18 free days after release. Music and Drawing are secondary: fixed and small, paused for the sprint, first to go.</p>'+
+    '<p><b>Board review:</b> first Friday of the month, 45 minutes. Score each track 1 to 5 with one line on why. Anything at 2 or below for two months running gets cut or shrunk.</p>'+
+    '<p><b>When a week collapses:</b> '+COLLAPSE+' Missing one week is fine. Missing three in a row is a plan failure, and the response is to shrink the plan, not to quit it.</p>';
+}
+
+/* ==========================================================================
+   CUSTOMISE
+   ========================================================================== */
+function renderCustom(){
+  var cur=phaseIdx(today);
+  $('cuMachine').innerHTML='<div class="ph"><b>Phases</b><span class="rt">'+esc(phaseName(today))+'</span></div>'+
+    PHASES.map(function(p,i){
+      var f=function(k){return new Date(k+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short'})};
+      return '<div class="phrow'+(i===cur?' now':'')+'"><span class="num" style="width:22px">'+(i+1)+'</span>'+
+        '<b>'+p[1]+'<em>'+p[4]+'</em></b><span class="num">'+f(p[2])+' – '+f(p[3])+'</span></div>';
+    }).join('')+
+    '<div class="mailbody"><p class="note">Phases switch on their dates by themselves. Plan v2 starts 1 November. Days before that keep what they showed then — plan v1 until 17 October, then pre-season — so every tick keeps its meaning.</p></div>';
+  renderStore();
+  renderInstall();
+  $('cuKey').value=S.apiKey||'';
+  $('cuAnchors').innerHTML=ANCHORS.map(function(a){
+   return '<div class="r" style="--tc:'+COL[a[1]]+'"><span class="flag"></span><span class="num" style="width:38px">'+a[0]+'</span>'+
+   '<span class="grow"><b>'+esc(a[2])+'</b><em>'+esc(a[3])+'</em></span></div>'}).join('');
+}
+
+/* ---- install card ---- */
+var deferredInstall=null;
+window.addEventListener('beforeinstallprompt',function(e){e.preventDefault();deferredInstall=e;renderInstall()});
+window.addEventListener('appinstalled',function(){deferredInstall=null;renderInstall()});
+function isStandalone(){
+  try{return (window.matchMedia&&matchMedia('(display-mode: standalone)').matches)||navigator.standalone===true}catch(e){return false}
+}
+function isIOS(){
+  return /iphone|ipad|ipod/i.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+}
+function renderInstall(){
+  var el=$('cuInstall'); if(!el)return;
+  var dot=function(c){return '<i style="background:'+c+'"></i>'};
+  var h='';
+  if(isStandalone()){
+    h+='<div class="okline">'+dot('#C8FF3F')+'<span><b style="color:#EDF2F7">Running as an app.</b> Opened from the home screen, full screen.</span></div>';
+  }else if(location.protocol==='file:'){
+    h+='<p>This copy was opened straight from a file, so it cannot be installed or work offline. Put the folder on a web host (GitHub Pages) and open that link on the phone.</p>';
+  }else if(deferredInstall){
+    h+='<p>Install Roster to the home screen. It opens full screen, like any other app, and keeps working without a connection.</p>'+
+       '<div class="pillrow" style="margin:0"><button class="pill key" id="cuInstallBtn">Install Roster</button></div>';
+  }else if(isIOS()){
+    h+='<p>On iPhone: open this page in <b>Safari</b>, tap the Share button, then <b>Add to Home Screen</b>. Open Roster from the new icon from then on.</p>'+
+       '<p class="note">The home-screen app keeps its own storage, separate from Safari. Right after installing, use <b>Import backup</b> below once to bring your ticks across.</p>';
+  }else{
+    h+='<p>Open the browser menu and choose <b>Install app</b> or <b>Add to Home screen</b>. Open Roster from the new icon from then on.</p>';
+  }
+  h+='<div class="okline">'+dot(STORE.sw?'#C8FF3F':'#5D6B7A')+'<span><b style="color:#EDF2F7">Offline</b> · '+
+     (STORE.sw?'ready — the app opens without a connection':(location.protocol==='file:'?'needs a web address':'getting ready on first load'))+'</span></div>';
+  el.innerHTML=h;
+  var b=$('cuInstallBtn');
+  if(b)b.onclick=function(){
+    if(!deferredInstall)return;
+    deferredInstall.prompt();
+    deferredInstall.userChoice.then(function(){deferredInstall=null;renderInstall()}).catch(function(){});
+  };
+}
+
+/* ---- storage card + saved copies ---- */
+function ago(ms){
+  if(!ms)return 'never';
+  var d=Math.floor((Date.now()-ms)/864e5);
+  return d<=0?'today':d===1?'yesterday':d+' days ago';
+}
+function renderStore(){
+  var el=$('cuStore'); if(!el)return;
+  var bytes=0; try{bytes=(localStorage.getItem(LS)||'').length}catch(e){}
+  var line=function(on,txt){
+    return '<div class="okline"><i style="background:'+(on===null?'#5D6B7A':on?'#C8FF3F':'#FF4D6D')+'"></i><span>'+txt+'</span></div>'};
+  var b=function(t){return '<b style="color:#EDF2F7">'+t+'</b>'};
+  var h='';
+  if(storeBad()){
+    h+='<div class="from" style="color:#FF8FA3">Not saving</div><p>'+esc(STORE.why)+'</p>'+
+       '<p class="note">Everything you tick this session is held in memory only and goes when the tab closes. '+
+       'Two ways out: put the app somewhere with a real address — a web host, or GitHub Pages — or export '+
+       'before you close and import next time.</p>'+
+       '<p class="note">Diagnostics: protocol <b>'+esc(location.protocol)+'</b> · host <b>'+
+       (esc(location.hostname)||'none')+'</b> · refused saves <b>'+STORE.fails+'</b></p>';
+  }else{
+    h+=line(STORE.ls,b('Main copy')+' · local storage · '+(STORE.ls?(bytes?Math.round(bytes/102.4)/10+' KB':'empty'):'not working'));
+    h+=line(STORE.idb,b('Mirror copy')+' · IndexedDB · '+(STORE.idb===null?'checking…':STORE.idb?'working':'not working'));
+    h+=line(STORE.persist,b('Protected from clean-up')+' · '+(STORE.persist===true?'yes':STORE.persist===false?'not granted — the browser may clear it if the phone runs low on space':'not reported by this browser'));
+    h+=line(S.lastExport&&Date.now()-S.lastExport<14*864e5?true:(S._t?false:null),b('Backup file')+' · last exported '+ago(S.lastExport)+
+       (S._t&&(!S.lastExport||Date.now()-S.lastExport>=14*864e5)?' — export one':''));
+    h+='<p class="note" style="margin-top:6px">Every change is written straight away, to both copies'+
+       (STORE.last?' · last saved '+STORE.last.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}):'')+
+       '. If the browser loses one, the other restores it on the next start.'+
+       (STORE.restored?' <b style="color:#9BC2FF">'+esc(STORE.restored)+'</b>':'')+'</p>';
+  }
+  el.innerHTML=h;
+  if(tab==='custom')loadSnaps();
+}
+function snapStats(o){
+  var done=0,d,id;
+  Object.keys(o.ticks||{}).forEach(function(k){Object.keys(o.ticks[k]).forEach(function(i){if(o.ticks[k][i]==='done')done++})});
+  return done+' block'+(done===1?'':'s')+' cleared · '+((o.dumps||[]).length)+' message'+((o.dumps||[]).length===1?'':'s');
+}
+function loadSnaps(){
+  var el=$('cuSnaps'); if(!el)return Promise.resolve();
+  return idbKeys().then(function(ks){
+    var keys=ks.filter(function(k){return SNAPRE.test(k)}).sort().reverse();
+    if(ks.indexOf('snap:before-restore')>=0)keys.unshift('snap:before-restore');
+    return Promise.all(keys.map(function(k){
+      return idbGet(k).then(function(js){var o=null;try{o=JSON.parse(js)}catch(e){} return {k:k,o:o,len:js?js.length:0}});
+    }));
+  }).then(function(list){
+    list=list.filter(function(x){return x.o});
+    el.innerHTML=list.length?list.map(function(x){
+      var lbl=x.k==='snap:before-restore'?'Before your last restore'
+        :'Start of '+new Date(x.k.slice(5)+'T00:00:00').toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'short'});
+      return '<div class="r" style="--tc:#4D8BFF"><span class="flag"></span>'+
+        '<span class="grow"><b>'+esc(lbl)+'</b><em>'+snapStats(x.o)+' · '+(Math.round(x.len/102.4)/10)+' KB</em></span>'+
+        '<button class="pill" style="padding:6px 12px;font-size:11px" data-snap="'+esc(x.k)+'">Restore</button></div>';
+    }).join(''):'<div style="padding:15px" class="note">No saved copies yet. The first one is taken the first time you open the app on a day that already has data.</div>';
+  }).catch(function(){
+    el.innerHTML='<div style="padding:15px" class="note">Saved copies need the in-app database, which this browser is not providing.</div>';
+  });
+}
+$('cuSnaps').onclick=function(e){
+  var b=e.target.closest('[data-snap]'); if(!b)return;
+  var k=b.dataset.snap;
+  $('modal').innerHTML='<div class="sheet">'+
+    '<div class="from" style="color:#9BC2FF">Restore a saved copy</div>'+
+    '<h3>Go back to this copy?</h3>'+
+    '<p class="note">Everything since then is replaced by what the copy holds. What you have right now is kept as “Before your last restore”, so you can come back to it. Your API key is not touched.</p>'+
+    '<div class="pillrow" style="margin:16px 0 0"><button class="pill key" data-rest="'+esc(k)+'">Restore</button>'+
+    '<button class="pill" data-no>Cancel</button></div></div>';
+  $('modal').classList.add('open');
+};
+function restoreSnap(k){
+  if(!/^snap:(before-restore|\d{4}-\d{2}-\d{2})$/.test(k))return;
+  idbGet(k).then(function(js){
+    var o=JSON.parse(js);
+    return idbPut('snap:before-restore',JSON.stringify(S)).then(function(){
+      var key=S.apiKey; adopt(o); if(!S.apiKey)S.apiKey=key;
+      save(); render(); loadSnaps();
+      toast('Copy restored','The previous state is kept','#4D8BFF',null);
+    });
+  }).catch(function(){toast('Could not restore','That copy could not be read','#FF4D6D',null)});
+}
+
+/* ---- export / import ---- */
+function exportBackup(){
+  var out={v:2,exported:new Date().toISOString(),
+           ticks:S.ticks,times:S.times,extra:S.extra,marks:S.marks,dumps:S.dumps,
+           signed:S.signed,machine:S.machine};
+  var name='roster-'+dkey(new Date())+'.json', text=JSON.stringify(out,null,2);
+  var done=function(how){
+    S.lastExport=Date.now();save();renderStore();
+    $('cuMsg').textContent=how+' The API key is not in the file — re-enter it after a restore.';
+  };
+  var download=function(){
+    var blob=new Blob([text],{type:'application/json'});
+    var a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download=name;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(function(){URL.revokeObjectURL(a.href)},4000);
+    done('Exported.');
+  };
+  try{
+    var file=new File([text],name,{type:'application/json'});
+    if(navigator.canShare&&navigator.canShare({files:[file]})){
+      navigator.share({files:[file],title:'Roster backup'}).then(function(){done('Shared.')})
+        .catch(function(err){if(!(err&&err.name==='AbortError'))download()});
+      return;
+    }
+  }catch(e){}
+  download();
+}
+$('cuExport').onclick=exportBackup;
+$('cuImport').onclick=function(){$('cuFile').click()};
+$('cuFile').onchange=function(e){
+  var f=e.target.files[0]; if(!f)return;
+  if(f.size>4e6){$('cuMsg').textContent='That file is too large to be a roster backup.';return}
+  var fr=new FileReader();
+  fr.onload=function(){
+    var inc,kept=0,dropped=0;
+    try{inc=JSON.parse(fr.result)}catch(err){$('cuMsg').textContent='That file is not valid JSON.';return}
+    if(!inc||typeof inc!=='object'){$('cuMsg').textContent='That file is not a roster backup.';return}
+
+    Object.keys(inc.ticks||{}).forEach(function(d){
+      if(!okDate(d)||!inc.ticks[d]||typeof inc.ticks[d]!=='object')return;
+      S.ticks[d]=S.ticks[d]||{};
+      Object.keys(inc.ticks[d]).forEach(function(id){
+        if(!okId(id)||!okState(inc.ticks[d][id])){dropped++;return}
+        if(!S.ticks[d][id]){S.ticks[d][id]=inc.ticks[d][id];kept++}
+      });
+    });
+    Object.keys(inc.times||{}).forEach(function(d){
+      if(!okDate(d)||!inc.times[d]||typeof inc.times[d]!=='object')return;
+      S.times[d]=S.times[d]||{};
+      Object.keys(inc.times[d]).forEach(function(id){
+        if(!okId(id)||!okTime(inc.times[d][id])){dropped++;return}
+        if(!S.times[d][id]){S.times[d][id]=inc.times[d][id];kept++}
+      });
+    });
+    Object.keys(inc.extra||{}).forEach(function(d){
+      if(!okDate(d)||!Array.isArray(inc.extra[d])||S.extra[d])return;
+      S.extra[d]=inc.extra[d].filter(function(x){return x&&typeof x==='object'}).slice(0,40)
+        .map(function(x){return {tr:okTrack(x.tr)?x.tr:'S',title:clean(x.title,90),
+                                 min:okMin(x.min),time:okTime(x.time)?x.time:'22:45'}});
+      kept+=S.extra[d].length;
+    });
+    Object.keys(inc.marks||{}).forEach(function(k){
+      if(!/^(m\d{1,3}|n\d{1,3}|mail\d{1,2}|mv\d{1,2}|d\d{9,16}|s\d{9,16})$/.test(k)){dropped++;return}
+      if(!S.marks[k]){S.marks[k]=1;kept++}
+    });
+    if(Array.isArray(inc.signed)){
+      var have={};S.signed.forEach(function(s){have[s.title]=1});
+      inc.signed.slice(0,60).forEach(function(s){
+        if(!s||!okDate(s.date)||!okTrack(s.tr)||have[s.title]){dropped++;return}
+        S.signed.push({id:'s'+Date.now()+Math.floor(Math.random()*1e3),date:s.date,tr:s.tr,
+                       title:clean(s.title,90),note:clean(s.note,160),signed:1});
+        kept++;
+      });
+      S.signed.sort(function(a,b){return a.date<b.date?-1:1});
+    }
+    if(Array.isArray(inc.dumps)){
+      var seen={};S.dumps.forEach(function(x){seen[x.ts]=1});
+      inc.dumps.slice(0,200).forEach(function(x){
+        if(!x||typeof x.ts!=='number'||seen[x.ts]){dropped++;return}
+        S.dumps.push({ts:x.ts,text:clean(x.text,4000),read:x.read?clean(x.read,600):undefined});
+        kept++;
+      });
+      S.dumps.sort(function(a,b){return b.ts-a.ts});
+    }
+    if(okDate(inc.machine)&&!S.machine)S.machine=inc.machine;
+
+    save();render();
+    $('cuMsg').textContent='Imported '+kept+' item'+(kept===1?'':'s')+
+      (dropped?', dropped '+dropped+' that did not look right.':'.')+
+      ' Nothing you already had was overwritten.';
+    $('cuFile').value='';
+  };
+  fr.readAsText(f);
+};
+$('cuReset').onclick=function(){delete S.ticks[TODAY];delete S.extra[TODAY];delete S.times[TODAY];save();render();$('cuMsg').textContent='Today cleared.'};
+$('cuKeySave').onclick=function(){S.apiKey=$('cuKey').value.trim();save();
+  $('cuKeyMsg').textContent=S.apiKey?'Key saved on this device. Notifications, Transfers and Scouting are live.':'Key cleared.'};
+
+/* ==========================================================================
+   BOOT — and a quiet midnight rollover, so a phone left open overnight
+   does not keep showing yesterday
+   ========================================================================== */
+function render(){
+  renderHome();renderFeed();renderCentral();renderNotif();renderSquad();
+  renderTransfers();renderAcademy();renderScout();renderOffice();renderMoney();renderCustom();
+  $('legend').innerHTML=legendHTML();
+  flagStorage();setDot();
+}
+function rollover(){
+  var now=new Date();
+  if(dkey(now)!==TODAY){today=now;TODAY=dkey(now);sel=null;howOpen={};render();ensureDaySnap()}
+}
+setInterval(rollover,60000);
+document.addEventListener('visibilitychange',function(){if(!document.hidden)rollover()});
+render();setTab('home');
+recover();
+requestPersist();
+
+/* ---- offline + install: register the service worker (needs https or localhost) ---- */
+if('serviceWorker' in navigator&&/^https?:$/.test(location.protocol)){
+  window.addEventListener('load',function(){
+    navigator.serviceWorker.register('sw.js').catch(function(){});
+    navigator.serviceWorker.ready.then(function(){STORE.sw=true;if(tab==='custom')renderInstall()}).catch(function(){});
+  });
+}
+</script>
+</body>
+</html>
